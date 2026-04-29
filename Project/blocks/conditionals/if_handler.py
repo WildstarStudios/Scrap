@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines
 
 class IfHandler(StatementHandler):
     keywords = ['if ']
@@ -23,7 +23,7 @@ class IfHandler(StatementHandler):
 
         branches = []
         current_cond = condition
-        current_body = []
+        current_body = []   # will hold (body_items, deferred_items)
         i = start_index + 1
         while i < len(lines):
             raw_line = lines[i]
@@ -54,8 +54,8 @@ class IfHandler(StatementHandler):
                 else:
                     break
             elif indent > base_indent:
-                body_items, i = parse_block_body(lines, i, base_indent)
-                current_body.extend(body_items)
+                body_items, deferred_items, i = parse_block_body(lines, i, base_indent)
+                current_body.append((body_items, deferred_items))
                 continue
             else:
                 break
@@ -68,7 +68,14 @@ class IfHandler(StatementHandler):
     def generate(self, node, indent=''):
         branches = node[1]
         lines_out = []
-        for idx, (cond, body_items) in enumerate(branches):
+        for idx, (cond, body_data) in enumerate(branches):
+            all_body_items = []
+            all_deferred = []
+            for item in body_data:
+                body_part, def_part = item
+                all_body_items.append(body_part)
+                all_deferred.extend(def_part)
+
             if idx == 0:
                 keyword = 'if'
             elif cond is None:
@@ -82,32 +89,37 @@ class IfHandler(StatementHandler):
                 lines_out.append(f'{indent}{keyword} {{')
 
             inner_indent = indent + '    '
-            for item in body_items:
-                if isinstance(item, tuple):
-                    if len(item) == 2 and isinstance(item[0], int):
-                        line_num, stmt = item
-                        found = False
-                        for h in get_handlers():
-                            if h.can_handle(stmt):
-                                node_inner, _ = h.parse([stmt], 0)
-                                lines_out.append(h.generate(node_inner, inner_indent))
-                                found = True
-                                break
-                        if not found:
-                            suggestion = suggest_fix(stmt)
-                            raise SyntaxError(f"Line {line_num}: Unknown statement '{stmt}'. {suggestion}")
-                    else:
-                        h, node_inner = item
-                        lines_out.append(h.generate(node_inner, inner_indent))
-                else:
-                    for h in get_handlers():
-                        if h.can_handle(item):
-                            node_inner, _ = h.parse([item], 0)
+            for body_part in all_body_items:
+                for item in body_part:
+                    if isinstance(item, tuple):
+                        if len(item) == 2 and isinstance(item[0], int):
+                            line_num, stmt = item
+                            found = False
+                            for h in get_handlers():
+                                if h.can_handle(stmt):
+                                    node_inner, _ = h.parse([stmt], 0)
+                                    lines_out.append(h.generate(node_inner, inner_indent))
+                                    found = True
+                                    break
+                            if not found:
+                                suggestion = suggest_fix(stmt)
+                                raise SyntaxError(f"Line {line_num}: Unknown statement '{stmt}'. {suggestion}")
+                        else:
+                            h, node_inner = item
                             lines_out.append(h.generate(node_inner, inner_indent))
-                            break
                     else:
-                        suggestion = suggest_fix(item)
-                        raise SyntaxError(f"Unknown statement inside if: {item}. {suggestion}")
+                        for h in get_handlers():
+                            if h.can_handle(item):
+                                node_inner, _ = h.parse([item], 0)
+                                lines_out.append(h.generate(node_inner, inner_indent))
+                                break
+                        else:
+                            suggestion = suggest_fix(item)
+                            raise SyntaxError(f"Unknown statement inside if: {item}. {suggestion}")
+
+            # Emit deferred statements
+            lines_out.extend(generate_deferred_lines(all_deferred, inner_indent))
+
             lines_out.append(f'{indent}}}')
         return '\n'.join(lines_out)
 

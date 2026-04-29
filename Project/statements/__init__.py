@@ -2,7 +2,7 @@ import re
 import os
 
 # ---------- Global state for type tracking ----------
-_var_types = {}   # <-- no more hardcoded function list
+_var_types = {}
 
 def set_var_type(name, cpp_type):
     _var_types[name] = cpp_type
@@ -139,7 +139,6 @@ def wrap_c_args(args, is_c_call):
         return args
     wrapped = []
     for arg in args:
-        # Only wrap plain variable names that are known std::strings
         if arg in _var_types and _var_types[arg] == 'std::string':
             wrapped.append(f'{arg}.c_str()')
         else:
@@ -155,12 +154,13 @@ def suggest_fix(line):
         return "Assignment should use 'variable = expression'. Example: " + line
     return "Check the statement syntax."
 
-# ---------- Block body parsing ----------
+# ---------- Block body parsing (updated to return defer list) ----------
 def parse_block_body(lines, start_index, base_indent):
     def get_indent(line):
         return len(line) - len(line.lstrip())
 
     body = []
+    deferred = []   # NEW: list of ('DEFER', stmt) nodes
     i = start_index
     from . import get_handlers
     handlers = get_handlers()
@@ -179,13 +179,24 @@ def parse_block_body(lines, start_index, base_indent):
         for h in handlers:
             if h.can_handle(stripped):
                 node, i = h.parse(lines, i)
-                body.append((h, node))
+                if node[0] == 'DEFER':
+                    deferred.append(node)
+                else:
+                    body.append((h, node))
                 handled = True
                 break
         if not handled:
             body.append((i+1, stripped))
             i += 1
-    return body, i
+    return body, deferred, i
+
+def generate_deferred_lines(deferred_nodes, indent):
+    """Turn deferred nodes into C++ statements with the given indent."""
+    lines = []
+    for node in deferred_nodes:
+        stmt = node[1]   # raw statement string
+        lines.append(f'{indent}{stmt};')
+    return lines
 
 # ---------- Base handler class ----------
 class StatementHandler:

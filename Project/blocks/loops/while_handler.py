@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines
 
 class WhileHandler(StatementHandler):
     keywords = ['while ']
@@ -20,13 +20,14 @@ class WhileHandler(StatementHandler):
             raise SyntaxError("Expected: while <condition>:")
         condition = m.group(1)
 
-        body_items, next_i = parse_block_body(lines, start_index + 1, base_indent)
-        return ('WHILE', condition, body_items), next_i
+        body_items, deferred_items, next_i = parse_block_body(lines, start_index + 1, base_indent)
+        return ('WHILE', (condition, body_items, deferred_items)), next_i
 
     def generate(self, node, indent=''):
-        condition, body_items = node[1], node[2]
+        condition, body_items, deferred_items = node[1]
         lines_out = [f'{indent}while ({condition}) {{']
         inner_indent = indent + '    '
+
         for item in body_items:
             if isinstance(item, tuple):
                 if len(item) == 2 and isinstance(item[0], int):
@@ -53,6 +54,8 @@ class WhileHandler(StatementHandler):
                 else:
                     suggestion = suggest_fix(item)
                     raise SyntaxError(f"Unknown statement inside while: {item}. {suggestion}")
+
+        lines_out.extend(generate_deferred_lines(deferred_items, inner_indent))
         lines_out.append(f'{indent}}}')
         return '\n'.join(lines_out)
 

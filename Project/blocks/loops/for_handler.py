@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines
 
 class ForHandler(StatementHandler):
     keywords = ['for ']
@@ -21,13 +21,14 @@ class ForHandler(StatementHandler):
         var_name = m.group(1)
         iterable = m.group(2).strip()
 
-        body_items, next_i = parse_block_body(lines, start_index + 1, base_indent)
-        return ('FOR', var_name, iterable, body_items), next_i
+        body_items, deferred_items, next_i = parse_block_body(lines, start_index + 1, base_indent)
+        return ('FOR', (var_name, iterable, body_items, deferred_items)), next_i
 
     def generate(self, node, indent=''):
-        var_name, iterable, body_items = node[1], node[2], node[3]
+        var_name, iterable, body_items, deferred_items = node[1]
         lines_out = [f'{indent}for (auto {var_name} : {iterable}) {{']
         inner_indent = indent + '    '
+
         for item in body_items:
             if isinstance(item, tuple):
                 if len(item) == 2 and isinstance(item[0], int):
@@ -54,6 +55,8 @@ class ForHandler(StatementHandler):
                 else:
                     suggestion = suggest_fix(item)
                     raise SyntaxError(f"Unknown statement inside for: {item}. {suggestion}")
+
+        lines_out.extend(generate_deferred_lines(deferred_items, inner_indent))
         lines_out.append(f'{indent}}}')
         return '\n'.join(lines_out)
 

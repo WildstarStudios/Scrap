@@ -7,7 +7,7 @@ import sys
 import os
 import importlib
 import inspect
-from statements import StatementHandler, register_handler, get_handlers, clear_var_types
+from statements import StatementHandler, register_handler, get_handlers, clear_var_types, generate_deferred_lines
 
 def strip_comments(line):
     """Remove -- comment from line, respecting quotes."""
@@ -43,6 +43,8 @@ def discover_handlers():
 def collect_all_headers(nodes):
     headers = set()
     for handler, node in nodes:
+        if node[0] == 'DEFER':
+            continue
         rh = handler.required_headers
         if callable(rh):
             headers.update(rh(node))
@@ -50,11 +52,11 @@ def collect_all_headers(nodes):
             headers.update(rh)
 
         # Recursively handle nested blocks
-        if node[0] in ('IF', 'WHILE', 'REPEAT', 'FOR'):
-            if node[0] == 'IF':
-                branches = node[1]
-                for _, body in branches:
-                    for item in body:
+        if node[0] == 'IF':
+            branches = node[1]
+            for _, body_data in branches:
+                for body_items, deferred_items in body_data:
+                    for item in body_items:
                         if isinstance(item, tuple):
                             if len(item) == 2 and isinstance(item[0], int):
                                 _, stmt = item
@@ -73,27 +75,33 @@ def collect_all_headers(nodes):
                                     headers.update(rh2(n))
                                 else:
                                     headers.update(rh2)
-            else:  # WHILE, REPEAT, FOR
-                body_items = node[2] if node[0] != 'FOR' else node[3]
-                for item in body_items:
-                    if isinstance(item, tuple):
-                        if len(item) == 2 and isinstance(item[0], int):
-                            _, stmt = item
-                            for h in get_handlers():
-                                if h.can_handle(stmt):
-                                    rh2 = h.required_headers
-                                    if callable(rh2):
-                                        headers.update(rh2(None))
-                                    else:
-                                        headers.update(rh2)
-                                    break
+        elif node[0] in ('WHILE', 'REPEAT', 'FOR'):
+            # New structure: node[1] = (condition, body_items, deferred_items) for WHILE/REPEAT,
+            # or (var, iter, body_items, deferred_items) for FOR.
+            data = node[1]
+            if node[0] == 'FOR':
+                body_items = data[2]   # (var, iter, body, deferred)
+            else:
+                body_items = data[1]   # (condition, body, deferred)
+            for item in body_items:
+                if isinstance(item, tuple):
+                    if len(item) == 2 and isinstance(item[0], int):
+                        _, stmt = item
+                        for h in get_handlers():
+                            if h.can_handle(stmt):
+                                rh2 = h.required_headers
+                                if callable(rh2):
+                                    headers.update(rh2(None))
+                                else:
+                                    headers.update(rh2)
+                                break
+                    else:
+                        h, n = item
+                        rh2 = h.required_headers
+                        if callable(rh2):
+                            headers.update(rh2(n))
                         else:
-                            h, n = item
-                            rh2 = h.required_headers
-                            if callable(rh2):
-                                headers.update(rh2(n))
-                            else:
-                                headers.update(rh2)
+                            headers.update(rh2)
     return headers
 
 def main():
@@ -154,13 +162,21 @@ def main():
     cpp_lines.append('int main() {')
     body_indent = '    '
 
-    # Generate code in the original order (no separation of definitions/actions)
+    # Separate deferred statements for top-level
+    deferred_main = []
+
     try:
         for handler, node in nodes:
-            cpp_lines.append(handler.generate(node, body_indent))
+            if node[0] == 'DEFER':
+                deferred_main.append(node)
+            else:
+                cpp_lines.append(handler.generate(node, body_indent))
     except SyntaxError as e:
         print(f"Error in {input_file}: {e}", file=sys.stderr)
         sys.exit(1)
+
+    # Emit deferred statements at the end of main
+    cpp_lines.extend(generate_deferred_lines(deferred_main, body_indent))
 
     cpp_lines.append('}')
     final_code = '\n'.join(cpp_lines) + '\n'
