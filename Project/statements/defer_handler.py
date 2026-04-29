@@ -11,7 +11,6 @@ class DeferHandler(StatementHandler):
         deferred_stmt = line[6:].strip()   # everything after 'defer '
         if not deferred_stmt:
             raise SyntaxError("Expected statement after 'defer'")
-
         # Transform library aliases (dots → underscore) and auto .c_str()
         call_info = parse_function_call(deferred_stmt)
         if call_info:
@@ -20,7 +19,7 @@ class DeferHandler(StatementHandler):
             transformed = f"{func}({', '.join(args)})"
             return ('DEFER', transformed), start_index + 1
         else:
-            # Not a function call? Keep it as is.
+            # Not a function call? Keep as is (e.g., raw expression)
             return ('DEFER', deferred_stmt), start_index + 1
 
     def generate(self, node, indent=''):

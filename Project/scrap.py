@@ -76,8 +76,6 @@ def collect_all_headers(nodes):
                                 else:
                                     headers.update(rh2)
         elif node[0] in ('WHILE', 'REPEAT', 'FOR'):
-            # New structure: node[1] = (condition, body_items, deferred_items) for WHILE/REPEAT,
-            # or (var, iter, body_items, deferred_items) for FOR.
             data = node[1]
             if node[0] == 'FOR':
                 body_items = data[2]   # (var, iter, body, deferred)

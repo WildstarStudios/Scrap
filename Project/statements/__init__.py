@@ -13,6 +13,10 @@ def get_var_type(name):
 def clear_var_types():
     _var_types.clear()
 
+def is_pointer_type(name):
+    t = _var_types.get(name)
+    return t is not None and t.endswith('*')
+
 # ---------- Handler registry ----------
 _handlers = []
 
@@ -150,7 +154,7 @@ def suggest_fix(line):
     line = line.strip()
     if line.startswith('set '):
         return "Use 'variable = expression' without 'set'. Example: " + line[4:]
-    if '=' in line and not line.startswith(('var ', 'if ', 'while ', 'repeat ', 'for ', 'ask ', 'log ', 'free ', 'import ', 'pause', '--')):
+    if '=' in line and not line.startswith(('var ', 'if ', 'while ', 'repeat ', 'for ', 'ask ', 'log ', 'free ', 'import ', 'pause', '--', 'delete ')):
         return "Assignment should use 'variable = expression'. Example: " + line
     return "Check the statement syntax."
 
@@ -160,7 +164,7 @@ def parse_block_body(lines, start_index, base_indent):
         return len(line) - len(line.lstrip())
 
     body = []
-    deferred = []   # NEW: list of ('DEFER', stmt) nodes
+    deferred = []   # list of ('DEFER', stmt) nodes
     i = start_index
     from . import get_handlers
     handlers = get_handlers()
