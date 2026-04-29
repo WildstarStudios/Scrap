@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines, resolve_expression
 
 class WhileHandler(StatementHandler):
     keywords = ['while ']
@@ -25,6 +25,8 @@ class WhileHandler(StatementHandler):
 
     def generate(self, node, indent=''):
         condition, body_items, deferred_items = node[1]
+        # Resolve any dotted C/C++ calls in the condition
+        condition = resolve_expression(condition)
         lines_out = [f'{indent}while ({condition}) {{']
         inner_indent = indent + '    '
 

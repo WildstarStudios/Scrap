@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines, resolve_expression
 
 class ForHandler(StatementHandler):
     keywords = ['for ']
@@ -26,6 +26,8 @@ class ForHandler(StatementHandler):
 
     def generate(self, node, indent=''):
         var_name, iterable, body_items, deferred_items = node[1]
+        # Resolve any dotted calls in the iterable expression (e.g., someLib.getList())
+        iterable = resolve_expression(iterable)
         lines_out = [f'{indent}for (auto {var_name} : {iterable}) {{']
         inner_indent = indent + '    '
 

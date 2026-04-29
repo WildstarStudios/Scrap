@@ -126,7 +126,17 @@ def parse_function_call(expr):
         c_prefix = resolve_c_alias(alias)
         if c_prefix:
             is_c_call = True
-            new_func = '_'.join(parts)          # e.g., sqlite3.open -> sqlite3_open
+            # Build the C function name dynamically:
+            # - parts[0] is the alias (already the C prefix).
+            # - For each subsequent part:
+            #   * if it starts with uppercase -> concatenate directly (e.g., glfw.Init -> glfwInit)
+            #   * otherwise -> prepend an underscore (e.g., sqlite3.open -> sqlite3_open)
+            new_func = parts[0]
+            for part in parts[1:]:
+                if part and part[0].isupper():
+                    new_func += part
+                else:
+                    new_func += '_' + part
             return new_func, args, is_c_call
         if is_cpp_alias(alias):
             namespace = _alias_map[alias]
@@ -148,6 +158,39 @@ def wrap_c_args(args, is_c_call):
         else:
             wrapped.append(arg)
     return wrapped
+
+# ---------- Expression resolver for conditions / loop expressions ----------
+def resolve_expression(expr):
+    """
+    Replace any dot‑calls inside `expr` with their resolved C/C++ names.
+    Example: "glfw.WindowShouldClose(window)" -> "glfwWindowShouldClose(window)"
+    """
+    def replace_func(match):
+        full_call = match.group(0)  # e.g., "glfw.WindowShouldClose(window)"
+        idx = full_call.find('(')
+        before_paren = full_call[:idx]
+        if '.' in before_paren:
+            parts = before_paren.split('.')
+            alias = parts[0]
+            c_prefix = resolve_c_alias(alias)
+            if c_prefix:
+                # C library: apply case rule
+                new_name = parts[0]
+                for part in parts[1:]:
+                    if part and part[0].isupper():
+                        new_name += part
+                    else:
+                        new_name += '_' + part
+                return new_name + '(' + full_call[idx+1:]
+            elif is_cpp_alias(alias):
+                # C++ namespace
+                namespace = _alias_map[alias]
+                new_name = namespace + '::' + '::'.join(parts[1:])
+                return new_name + '(' + full_call[idx+1:]
+        return full_call
+
+    # Find patterns like identifier.identifier(...) with optional arguments
+    return re.sub(r'[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*\([^)]*\)', replace_func, expr)
 
 # ---------- Error suggestion ----------
 def suggest_fix(line):

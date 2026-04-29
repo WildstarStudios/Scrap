@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments, generate_deferred_lines, resolve_expression
 
 class IfHandler(StatementHandler):
     keywords = ['if ']
@@ -84,7 +84,7 @@ class IfHandler(StatementHandler):
                 keyword = 'else if'
 
             if cond is not None:
-                lines_out.append(f'{indent}{keyword} ({cond}) {{')
+                lines_out.append(f'{indent}{keyword} ({resolve_expression(cond)}) {{')
             else:
                 lines_out.append(f'{indent}{keyword} {{')
 

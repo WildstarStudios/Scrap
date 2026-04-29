@@ -1,5 +1,5 @@
 import re
-from .. import StatementHandler, parse_function_call, strip_comments, set_var_type, wrap_c_args
+from .. import StatementHandler, parse_function_call, strip_comments, set_var_type, wrap_c_args, resolve_c_alias
 
 class VarHandler(StatementHandler):
     def can_handle(self, line):
@@ -147,9 +147,17 @@ class VarHandler(StatementHandler):
             'String': 'std::string',
             'str': 'std::string',
             'bool': 'bool',
+            # --- new high‑level aliases for common C pointer types ---
+            'CString': 'char*',
+            'CStringList': 'char**',
         }
         base_type = scrap_type.rstrip('*&').rstrip()
         if base_type in mapping:
             suffix = scrap_type[len(base_type):]
             return mapping[base_type] + suffix
+
+        # If it's a known C library alias and not already a pointer, make it one
+        if resolve_c_alias(base_type) is not None and '*' not in scrap_type and '&' not in scrap_type:
+            return base_type + '*'
+
         return scrap_type
