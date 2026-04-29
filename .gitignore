@@ -5,6 +5,15 @@ __pycache__/
 
 # C extensions
 *.so
+*.exe
+*.cpp
+*.C
+*.scrap
+*.db
+*.h
+.hpp
+libs/
+*.o
 
 # Distribution / packaging
 .Python
