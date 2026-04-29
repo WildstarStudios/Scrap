@@ -1,12 +1,26 @@
 import re
 import os
-from . import StatementHandler, register_alias, register_c_alias, is_c_header, strip_comments
+from . import StatementHandler, register_alias, register_c_alias, strip_comments
 
 STD_HEADERS = {
     'iostream', 'string', 'vector', 'map', 'set', 'list', 'deque', 'array',
     'algorithm', 'numeric', 'memory', 'fstream', 'sstream', 'cmath', 'cstdlib',
     'cstdio', 'cstring', 'ctime', 'chrono', 'thread', 'mutex', 'atomic'
 }
+
+def _is_cpp_header(header_path):
+    """Open the file and look for C++ keywords. Return True if C++."""
+    try:
+        with open(header_path, 'r', encoding='utf-8', errors='ignore') as f:
+            content = f.read(4096)
+            # Strong C++ indicators
+            if re.search(r'\b(namespace|template|class\s+\w+\s*[:{]|public\s*:|private\s*:|protected\s*:)\b', content):
+                return True
+            if re.search(r'extern\s*"C"', content):
+                return False
+    except FileNotFoundError:
+        pass
+    return False
 
 class ImportHandler(StatementHandler):
     keywords = ['import lib ']
@@ -37,10 +51,7 @@ class ImportHandler(StatementHandler):
                 header = os.path.join('libs', raw_path).replace('\\', '/')
                 use_angles = False
 
-        if is_c_header(header):
-            kind = 'c'
-        else:
-            kind = 'cpp'
+        kind = self._determine_header_kind(header, use_angles)
 
         if kind == 'cpp':
             if custom_alias:
@@ -48,14 +59,9 @@ class ImportHandler(StatementHandler):
             else:
                 alias = os.path.basename(header)
                 alias = re.sub(r'\.(hpp|h|hxx)$', '', alias)
-            # Top‑level namespace: take first component of path
-            # e.g., "rapidfuzz/fuzz.hpp" → "rapidfuzz"
-            path_parts = header.replace('\\', '/').split('/')
-            namespace = path_parts[0] if len(path_parts) > 1 else alias
-            register_alias(alias, namespace)
+            register_alias(alias, alias)
             return ('IMPORT_CPP', header, alias, use_angles), start_index + 1
         else:
-            # C library: register alias for dot‑to‑underscore
             if custom_alias:
                 alias = custom_alias
             else:
@@ -63,6 +69,22 @@ class ImportHandler(StatementHandler):
                 alias = re.sub(r'\.(h|hpp)$', '', alias)
             register_c_alias(alias, alias)
             return ('IMPORT_C', header, use_angles), start_index + 1
+
+    def _determine_header_kind(self, header, use_angles):
+        if use_angles:
+            if '.' not in header:
+                return 'cpp'
+            elif header.endswith('.h'):
+                return 'c'
+            else:
+                return 'c'
+        else:
+            if os.path.exists(header):
+                return 'cpp' if _is_cpp_header(header) else 'c'
+            libs_path = os.path.join('libs', header)
+            if os.path.exists(libs_path):
+                return 'cpp' if _is_cpp_header(libs_path) else 'c'
+            return 'cpp'  # fallback
 
     def generate(self, node, indent=''):
         return ''
