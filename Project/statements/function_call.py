@@ -1,5 +1,5 @@
 import re
-from . import StatementHandler, parse_function_call, strip_comments
+from . import StatementHandler, parse_function_call, strip_comments, wrap_c_args
 
 class FunctionCallHandler(StatementHandler):
     keywords = []
@@ -20,7 +20,8 @@ class FunctionCallHandler(StatementHandler):
         call_expr = node[1]
         call_info = parse_function_call(call_expr)
         if call_info:
-            full_func, args = call_info
+            full_func, args, is_c = call_info
+            args = wrap_c_args(args, is_c)
             args_str = ', '.join(args)
             return f'{indent}{full_func}({args_str});'
         return f'{indent}{call_expr};'

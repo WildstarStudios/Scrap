@@ -1,5 +1,5 @@
 import re
-from .. import StatementHandler, parse_function_call, strip_comments
+from .. import StatementHandler, parse_function_call, strip_comments, wrap_c_args
 
 class LogHandler(StatementHandler):
     keywords = ['log ']
@@ -22,7 +22,8 @@ class LogHandler(StatementHandler):
             if '(' in part and ')' in part:
                 call_info = parse_function_call(part)
                 if call_info:
-                    full_func, args = call_info
+                    full_func, args, is_c = call_info
+                    args = wrap_c_args(args, is_c)
                     args_str = ', '.join(args)
                     transformed_parts.append(f'{full_func}({args_str})')
                 else:

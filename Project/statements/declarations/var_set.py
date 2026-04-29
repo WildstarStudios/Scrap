@@ -1,5 +1,5 @@
 import re
-from .. import StatementHandler, parse_function_call, strip_comments, C_STRING_FUNCTIONS, _var_types
+from .. import StatementHandler, parse_function_call, strip_comments, wrap_c_args, _var_types
 
 class SetHandler(StatementHandler):
     keywords = []
@@ -20,23 +20,24 @@ class SetHandler(StatementHandler):
         lhs = lhs.strip()
         rhs = rhs.strip()
 
-        # --- String literal or string expression ---
+        # 1. Plain string literal (no concatenation)
+        if rhs.startswith('"') and rhs.endswith('"') and '+' not in rhs:
+            literal = rhs[1:-1]
+            return ('SET_STRING', lhs, literal), start_index + 1
+
+        # 2. String expression (starts with quote but has +)
         if rhs.startswith('"'):
-            # Plain literal (no concatenation)
-            if rhs.endswith('"') and '+' not in rhs:
-                literal = rhs[1:-1]
-                return ('SET_STRING', lhs, literal), start_index + 1
-            # Contains '+' → it's a concatenation expression
-            # Do NOT attempt to parse it as a function call – it's not one.
+            # Contains '+' → treat as generic expression
             return ('SET_EXPR', lhs, rhs), start_index + 1
 
-        # --- Function call (only when rhs doesn't start with a quote) ---
+        # 3. Function call
         call_info = parse_function_call(rhs)
         if call_info:
-            full_func, args = call_info
+            full_func, args, is_c = call_info
+            args = wrap_c_args(args, is_c)          # <-- automatic .c_str() if needed
             return ('SET_FUNCCALL', lhs, full_func, args), start_index + 1
 
-        # --- Numeric, nullptr, or generic expression ---
+        # 4. Numeric, nullptr, or generic expression
         if re.match(r'^-?\d+\.\d+$', rhs):
             return ('SET_FLOAT', lhs, rhs), start_index + 1
         elif re.match(r'^-?\d+$', rhs):
@@ -61,15 +62,6 @@ class SetHandler(StatementHandler):
             return f'{indent}{lhs} = "{escaped}";'
         elif kind == 'SET_FUNCCALL':
             full_func, args = node[2], node[3]
-            # Transform arguments for C string functions
-            if full_func in C_STRING_FUNCTIONS or any(f in full_func for f in C_STRING_FUNCTIONS):
-                new_args = []
-                for arg in args:
-                    if arg in _var_types and _var_types[arg] == 'std::string':
-                        new_args.append(f'{arg}.c_str()')
-                    else:
-                        new_args.append(arg)
-                args = new_args
             args_str = ', '.join(args)
             return f'{indent}{lhs} = {full_func}({args_str});'
         elif kind == 'SET_EXPR':

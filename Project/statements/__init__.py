@@ -2,15 +2,7 @@ import re
 import os
 
 # ---------- Global state for type tracking ----------
-_var_types = {}
-_C_STRING_FUNCTIONS = {
-    'strlen', 'strcmp', 'strcpy', 'strcat', 'strchr', 'strstr',
-    'printf', 'sprintf', 'fprintf', 'puts', 'fputs',
-    'fopen', 'fclose', 'fread', 'fwrite',
-    'sqlite3_open', 'sqlite3_exec', 'sqlite3_get_table', 'sqlite3_free',
-    'sqlite3_close', 'sqlite3_errmsg'
-}
-C_STRING_FUNCTIONS = _C_STRING_FUNCTIONS
+_var_types = {}   # <-- no more hardcoded function list
 
 def set_var_type(name, cpp_type):
     _var_types[name] = cpp_type
@@ -96,7 +88,10 @@ def _split_args(args_str):
 
 # ---------- Function call parsing (handles nested parentheses) ----------
 def parse_function_call(expr):
-    # Find the matching closing parenthesis for the first '('
+    """
+    Returns (transformed_func_name, arg_list, is_c_call)
+    or None if it's not a function call.
+    """
     idx = expr.find('(')
     if idx == -1:
         return None
@@ -119,26 +114,37 @@ def parse_function_call(expr):
     args_str = expr[idx+1:end].strip()
     args = _split_args(args_str)
 
-    # Transform the function name if it contains dots
+    is_c_call = False
+    new_func = func_name
     if '.' in func_name:
         parts = func_name.split('.')
         alias = parts[0]
-        # C library alias?
         c_prefix = resolve_c_alias(alias)
         if c_prefix:
-            # Replace all dots with underscores
-            new_func = '_'.join(parts)
-            return new_func, args
-        # C++ namespace alias?
+            is_c_call = True
+            new_func = '_'.join(parts)          # e.g., sqlite3.open -> sqlite3_open
+            return new_func, args, is_c_call
         if is_cpp_alias(alias):
             namespace = _alias_map[alias]
             if len(parts) == 1:
                 new_func = namespace
             else:
                 new_func = namespace + '::' + '::'.join(parts[1:])
-            return new_func, args
-    # No alias – keep as is
-    return func_name, args
+            return new_func, args, is_c_call   # is_c_call remains False
+    return func_name, args, is_c_call
+
+def wrap_c_args(args, is_c_call):
+    """If this is a C call, convert any std::string variable to .c_str()"""
+    if not is_c_call:
+        return args
+    wrapped = []
+    for arg in args:
+        # Only wrap plain variable names that are known std::strings
+        if arg in _var_types and _var_types[arg] == 'std::string':
+            wrapped.append(f'{arg}.c_str()')
+        else:
+            wrapped.append(arg)
+    return wrapped
 
 # ---------- Error suggestion ----------
 def suggest_fix(line):

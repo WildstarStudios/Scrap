@@ -1,5 +1,5 @@
 import re
-from .. import StatementHandler, parse_function_call, strip_comments, set_var_type
+from .. import StatementHandler, parse_function_call, strip_comments, set_var_type, wrap_c_args
 
 class VarHandler(StatementHandler):
     def can_handle(self, line):
@@ -31,25 +31,23 @@ class VarHandler(StatementHandler):
         cpp_type = self._to_cpp_type(scrap_type)
 
         # 1. If it looks like a quoted string, handle it as a string literal immediately.
-        #    Do NOT pass it to parse_function_call – even if it contains parentheses.
         if value_expr.startswith('"'):
             if not value_expr.endswith('"'):
                 raise SyntaxError("Unclosed string literal")
             if '+' in value_expr:
-                # Concatenation with + – treat as generic expression
                 set_var_type(name, cpp_type)
                 return ('DEFINE_VAR_EXPR', name, value_expr, cpp_type), start_index + 1
-
             if cpp_type != 'std::string':
                 raise SyntaxError(f"Type mismatch: cannot assign string to '{scrap_type}'")
             literal = value_expr[1:-1]
             set_var_type(name, cpp_type)
             return ('DEFINE_VAR_STRING', name, literal, cpp_type), start_index + 1
 
-        # 2. Function call (only if it doesn't start with a quote)
+        # 2. Function call
         call_info = parse_function_call(value_expr)
         if call_info:
-            full_func, args = call_info
+            full_func, args, is_c = call_info
+            args = wrap_c_args(args, is_c)      # <-- auto c_str() for C calls
             set_var_type(name, cpp_type)
             return ('DEFINE_VAR_FUNCCALL', name, full_func, args, cpp_type), start_index + 1
 
