@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Scrap Transpiler v0.2 – high‑level with automatic memory, optional low‑level escape.
+Scrap Transpiler v0.3 – with functions, return, and proper entry point.
 """
 
 import sys
@@ -51,7 +51,7 @@ def collect_all_headers(nodes):
         else:
             headers.update(rh)
 
-        # Recursively handle nested blocks
+        # Recursively handle nested blocks (including function bodies)
         if node[0] == 'IF':
             branches = node[1]
             for _, body_data in branches:
@@ -61,6 +61,8 @@ def collect_all_headers(nodes):
                             if len(item) == 2 and isinstance(item[0], int):
                                 _, stmt = item
                                 for h in get_handlers():
+                                    if not isinstance(h, StatementHandler):
+                                        continue
                                     if h.can_handle(stmt):
                                         rh2 = h.required_headers
                                         if callable(rh2):
@@ -70,22 +72,27 @@ def collect_all_headers(nodes):
                                         break
                             else:
                                 h, n = item
+                                if not isinstance(h, StatementHandler):
+                                    continue
                                 rh2 = h.required_headers
                                 if callable(rh2):
                                     headers.update(rh2(n))
                                 else:
                                     headers.update(rh2)
-        elif node[0] in ('WHILE', 'REPEAT', 'FOR'):
-            data = node[1]
+        elif node[0] in ('WHILE', 'REPEAT', 'FOR', 'FUNC'):
             if node[0] == 'FOR':
-                body_items = data[2]   # (var, iter, body, deferred)
+                body_items = node[1][2]
+            elif node[0] == 'FUNC':
+                body_items = node[1][4]
             else:
-                body_items = data[1]   # (condition, body, deferred)
+                body_items = node[1][1]
             for item in body_items:
                 if isinstance(item, tuple):
                     if len(item) == 2 and isinstance(item[0], int):
                         _, stmt = item
                         for h in get_handlers():
+                            if not isinstance(h, StatementHandler):
+                                continue
                             if h.can_handle(stmt):
                                 rh2 = h.required_headers
                                 if callable(rh2):
@@ -95,6 +102,8 @@ def collect_all_headers(nodes):
                                 break
                     else:
                         h, n = item
+                        if not isinstance(h, StatementHandler):
+                            continue
                         rh2 = h.required_headers
                         if callable(rh2):
                             headers.update(rh2(n))
@@ -103,7 +112,6 @@ def collect_all_headers(nodes):
     return headers
 
 def main():
-    # Clear variable types from any previous run
     clear_var_types()
 
     if len(sys.argv) != 3:
@@ -119,7 +127,9 @@ def main():
     discover_handlers()
     handlers = get_handlers()
 
-    nodes = []
+    # Parse all top-level nodes
+    top_level_nodes = []
+    functions = []
     i = 0
     while i < len(source_lines):
         raw_line = source_lines[i].rstrip('\n')
@@ -130,10 +140,15 @@ def main():
 
         handled = False
         for handler in handlers:
+            if not isinstance(handler, StatementHandler):
+                continue
             if handler.can_handle(line):
                 try:
                     node, i = handler.parse(source_lines, i)
-                    nodes.append((handler, node))
+                    if node[0] == 'FUNC':
+                        functions.append((handler, node))
+                    else:
+                        top_level_nodes.append((handler, node))
                     handled = True
                     break
                 except SyntaxError as e:
@@ -143,10 +158,16 @@ def main():
             print(f"Error on line {i+1} of {input_file}: Unknown statement: {line}", file=sys.stderr)
             sys.exit(1)
 
-    headers = collect_all_headers(nodes)
+    # Collect headers from both functions and top-level nodes
+    headers = collect_all_headers(top_level_nodes + functions)
+
+    # Force inclusion of <iostream> because log/ask/pause use it
+    headers.add('<iostream>')
 
     pre_main_lines = []
-    for handler, node in nodes:
+    for handler, node in top_level_nodes + functions:
+        if not isinstance(handler, StatementHandler):
+            continue
         if hasattr(handler, 'generate_pre_main'):
             pm = handler.generate_pre_main(node)
             if pm:
@@ -157,25 +178,53 @@ def main():
         cpp_lines.extend([f'#include {h}' for h in sorted(headers)])
     cpp_lines.extend(pre_main_lines)
     cpp_lines.append('')
+
+    # Generate forward declarations for all user functions
+    for handler, node in functions:
+        if not isinstance(handler, StatementHandler):
+            continue
+        if hasattr(handler, 'forward_declaration'):
+            fwd = handler.forward_declaration(node)
+            if fwd:
+                cpp_lines.append(fwd)
+    if functions:
+        cpp_lines.append('')
+
+    # Generate function definitions
+    for handler, node in functions:
+        if not isinstance(handler, StatementHandler):
+            continue
+        if hasattr(handler, 'generate_function'):
+            cpp_lines.append(handler.generate_function(node))
+
+    # Determine if user defined a 'main' function
+    user_main_node = None
+    for handler, node in functions:
+        if node[0] == 'FUNC' and node[1][0] == 'main':
+            user_main_node = node
+            break
+
+    # Generate real C++ int main()
+    cpp_lines.append('')
     cpp_lines.append('int main() {')
     body_indent = '    '
 
-    # Separate deferred statements for top-level
     deferred_main = []
+    for handler, node in top_level_nodes:
+        if node[0] == 'DEFER':
+            deferred_main.append(node)
+        else:
+            cpp_lines.append(handler.generate(node, body_indent))
 
-    try:
-        for handler, node in nodes:
-            if node[0] == 'DEFER':
-                deferred_main.append(node)
-            else:
-                cpp_lines.append(handler.generate(node, body_indent))
-    except SyntaxError as e:
-        print(f"Error in {input_file}: {e}", file=sys.stderr)
-        sys.exit(1)
+    if user_main_node:
+        return_type = user_main_node[1][3]
+        if return_type == 'int':
+            cpp_lines.append(f'{body_indent}return user_main();')
+        else:
+            cpp_lines.append(f'{body_indent}user_main();')
+            cpp_lines.append(f'{body_indent}return 0;')
 
-    # Emit deferred statements at the end of main
     cpp_lines.extend(generate_deferred_lines(deferred_main, body_indent))
-
     cpp_lines.append('}')
     final_code = '\n'.join(cpp_lines) + '\n'
 

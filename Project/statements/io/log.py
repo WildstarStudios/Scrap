@@ -19,7 +19,10 @@ class LogHandler(StatementHandler):
         parts = self._split_expression(expr)
         transformed_parts = []
         for part in parts:
-            if '(' in part and ')' in part:
+            part = part.strip()
+            if (part.startswith('"') and part.endswith('"')) or part.replace('.', '').replace('-', '').isdigit():
+                transformed_parts.append(part)
+            elif '(' in part and ')' in part:
                 call_info = parse_function_call(part)
                 if call_info:
                     full_func, args, is_c = call_info
@@ -55,4 +58,4 @@ class LogHandler(StatementHandler):
             parts = [expr.strip()]
         return parts
 
-    required_headers = {'<iostream>'}
+    required_headers = {'<iostream>', '<string>'}
