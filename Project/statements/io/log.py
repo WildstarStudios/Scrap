@@ -1,5 +1,5 @@
 import re
-from .. import StatementHandler, strip_comments
+from .. import StatementHandler, parse_function_call, strip_comments
 
 class LogHandler(StatementHandler):
     keywords = ['log ']
@@ -16,17 +16,26 @@ class LogHandler(StatementHandler):
 
     def generate(self, node, indent=''):
         expr = node[1]
-        # Split the expression on '+' that are not inside quotes
         parts = self._split_expression(expr)
-        # Build the output chain: std::cout << part1 << part2 << ... << std::endl;
-        output = f'{indent}std::cout'
+        transformed_parts = []
         for part in parts:
+            if '(' in part and ')' in part:
+                call_info = parse_function_call(part)
+                if call_info:
+                    full_func, args = call_info
+                    args_str = ', '.join(args)
+                    transformed_parts.append(f'{full_func}({args_str})')
+                else:
+                    transformed_parts.append(part)
+            else:
+                transformed_parts.append(part)
+        output = f'{indent}std::cout'
+        for part in transformed_parts:
             output += f' << {part}'
         output += ' << std::endl;'
         return output
 
     def _split_expression(self, expr):
-        """Split expression on '+' outside quotes, preserving quoted strings."""
         parts = []
         current = []
         in_quotes = False
@@ -41,7 +50,6 @@ class LogHandler(StatementHandler):
                 current.append(ch)
         if current:
             parts.append(''.join(current).strip())
-        # If no '+' was found, the whole expression is a single part
         if not parts:
             parts = [expr.strip()]
         return parts

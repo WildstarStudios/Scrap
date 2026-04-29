@@ -1,15 +1,16 @@
 import re
-from .. import StatementHandler, strip_comments
+from .. import StatementHandler, strip_comments, set_var_type
 
 class ListVarHandler(StatementHandler):
-    keywords = []
+    keywords = []   # dynamic detection
 
     def can_handle(self, line):
         stripped = line.strip()
-        return stripped.startswith('var ') and '= [' in stripped
+        # Matches: list name as ElementType = [...]  OR  array name as ElementType = [...]
+        return bool(re.match(r'^(list|array)\s+[a-zA-Z_]\w*\s+as\s+[a-zA-Z_]\w*\s*=\s*\[.*\]$', stripped))
 
     def parse(self, lines, start_index):
-        # Collect raw lines until matching closing bracket
+        # Collect multi-line declaration until brackets balance
         full_decl = lines[start_index].rstrip('\n')
         i = start_index + 1
         bracket_count = full_decl.count('[') - full_decl.count(']')
@@ -19,53 +20,36 @@ class ListVarHandler(StatementHandler):
             bracket_count += raw.count('[') - raw.count(']')
             i += 1
 
-        # Strip comments from the whole declaration
         full_decl = strip_comments(full_decl).strip()
-
-        m = re.match(r'^var\s+([a-zA-Z_]\w*)\s*(?:as\s+([^\s=]+))?\s*=\s*\[(.*?)\]\s*(?:\s+as\s+([^\s]+))?\s*$', full_decl, re.DOTALL)
+        m = re.match(r'^(list|array)\s+([a-zA-Z_]\w*)\s+as\s+([a-zA-Z_]\w*)\s*=\s*\[(.*?)\]\s*$', full_decl, re.DOTALL)
         if not m:
-            raise SyntaxError("Expected: var name [as Type] = [elem1, ...]  or  var name = [elem1, ...] as Type")
-        name = m.group(1)
-        type_before = m.group(2)
-        elements_raw = m.group(3).strip()
-        type_after = m.group(4)
+            raise SyntaxError("Expected: list name as ElementType = [elem1, elem2, ...]")
+        kind = m.group(1)          # 'list' or 'array'
+        name = m.group(2)
+        element_type_scrap = m.group(3).strip()
+        elements_raw = m.group(4).strip()
 
-        type_hint = type_after if type_after else type_before
+        # Convert element type to C++
+        element_type_cpp = self._to_cpp_type(element_type_scrap)
+        vector_type = f"std::vector<{element_type_cpp}>"
+
         elements = self._parse_elements(elements_raw)
 
-        if elements:
-            element_type = self._infer_element_type(elements)
-        else:
-            if not type_hint:
-                raise SyntaxError("Empty list requires explicit type: use 'as List<type>' before or after []")
-            inner_match = re.match(r'^List<(.+)>$', type_hint.strip())
-            if not inner_match:
-                raise SyntaxError("Type hint for list must be List<element_type>")
-            element_type = self._normalize_type(inner_match.group(1))
+        # Type-check each element
+        for elem in elements:
+            self._check_element_type(elem, element_type_scrap, element_type_cpp)
 
-        vector_type = f"std::vector<{element_type}>"
-
-        if type_hint:
-            hint_match = re.match(r'^List<(.+)>$', type_hint.strip())
-            if hint_match:
-                provided = self._normalize_type(hint_match.group(1))
-                if provided != element_type:
-                    raise SyntaxError(f"Type mismatch: List<{provided}> but elements are {element_type}")
-            else:
-                raise SyntaxError("Type hint must be List<element_type>")
-
-        return ('DEFINE_LIST', name, vector_type, elements), i
+        set_var_type(name, vector_type)
+        return ('DEFINE_LIST', name, vector_type, elements, kind), i
 
     def generate(self, node, indent=''):
-        _, name, vector_type, elements = node
+        _, name, vector_type, elements, _ = node
         cpp_elements = []
         for e in elements:
             if e.startswith('"') and e.endswith('"'):
                 escaped = e[1:-1].replace('\\', '\\\\').replace('"', '\\"')
                 cpp_elements.append(f'"{escaped}"')
-            elif e.isdigit() or (e[0]=='-' and e[1:].isdigit()):
-                cpp_elements.append(e)
-            elif re.match(r'^-?\d+\.\d+$', e):
+            elif e in ('true', 'false'):
                 cpp_elements.append(e)
             else:
                 cpp_elements.append(e)
@@ -73,40 +57,47 @@ class ListVarHandler(StatementHandler):
         return f'{indent}{vector_type} {name} = {init_list};'
 
     def required_headers(self, node=None):
-        return {'<vector>'}
+        return {'<vector>', '<string>'}
 
-    def _parse_elements(self, raw):
+    def _parse_elements(self, raw: str):
         if not raw.strip():
             return []
         elements = []
-        current = ''
+        current = []
         in_quotes = False
         for ch in raw:
             if ch == '"':
                 in_quotes = not in_quotes
-                current += ch
+                current.append(ch)
             elif ch == ',' and not in_quotes:
-                elements.append(current.strip())
-                current = ''
+                elements.append(''.join(current).strip())
+                current = []
             else:
-                current += ch
-        if current.strip():
-            elements.append(current.strip())
+                current.append(ch)
+        if current:
+            elements.append(''.join(current).strip())
         return elements
 
-    def _infer_element_type(self, elements):
-        first = elements[0]
-        if first.startswith('"') and first.endswith('"'):
-            return 'std::string'
-        elif re.match(r'^-?\d+\.\d+$', first):
-            return 'double'
-        elif first.isdigit() or (first[0]=='-' and first[1:].isdigit()):
-            return 'int'
-        else:
-            return 'int'
+    def _to_cpp_type(self, scrap_type: str) -> str:
+        mapping = {
+            'int': 'int',
+            'float': 'double',
+            'String': 'std::string',
+            'bool': 'bool',
+        }
+        return mapping.get(scrap_type, scrap_type)
 
-    def _normalize_type(self, t):
-        t = t.strip()
-        if t == 'string':
-            return 'std::string'
-        return t
+    def _check_element_type(self, elem: str, scrap_type: str, cpp_type: str):
+        if scrap_type == 'String':
+            if not (elem.startswith('"') and elem.endswith('"')):
+                raise SyntaxError(f"Element '{elem}' must be a quoted string")
+        elif scrap_type == 'int':
+            if not re.match(r'^-?\d+$', elem):
+                raise SyntaxError(f"Element '{elem}' is not an integer")
+        elif scrap_type == 'float':
+            if not re.match(r'^-?\d+\.?\d*$', elem):
+                raise SyntaxError(f"Element '{elem}' is not a float")
+        elif scrap_type == 'bool':
+            if elem not in ('true', 'false'):
+                raise SyntaxError(f"Element '{elem}' is not a boolean")
+        # For other types (e.g., pointers) we trust the user

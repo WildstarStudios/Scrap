@@ -154,16 +154,9 @@ def main():
     cpp_lines.append('int main() {')
     body_indent = '    '
 
-    definitions = []
-    actions = []
-    for handler, node in nodes:
-        if node[0] == 'DEFINE_VAR' or node[0].startswith('DEFINE_VAR_') or node[0] == 'DEFINE_LIST':
-            definitions.append((handler, node))
-        else:
-            actions.append((handler, node))
-
+    # Generate code in the original order (no separation of definitions/actions)
     try:
-        for handler, node in definitions + actions:
+        for handler, node in nodes:
             cpp_lines.append(handler.generate(node, body_indent))
     except SyntaxError as e:
         print(f"Error in {input_file}: {e}", file=sys.stderr)

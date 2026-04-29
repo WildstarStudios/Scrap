@@ -1,6 +1,6 @@
 import re
 import os
-from . import StatementHandler, register_alias, is_c_header, strip_comments
+from . import StatementHandler, register_alias, register_c_alias, is_c_header, strip_comments
 
 STD_HEADERS = {
     'iostream', 'string', 'vector', 'map', 'set', 'list', 'deque', 'array',
@@ -48,14 +48,20 @@ class ImportHandler(StatementHandler):
             else:
                 alias = os.path.basename(header)
                 alias = re.sub(r'\.(hpp|h|hxx)$', '', alias)
-            namespace = header
-            if namespace.startswith('libs/'):
-                namespace = namespace[5:]
-            namespace = namespace.replace('/', '::')
-            namespace = re.sub(r'\.(hpp|h|hxx)$', '', namespace)
+            # Top‑level namespace: take first component of path
+            # e.g., "rapidfuzz/fuzz.hpp" → "rapidfuzz"
+            path_parts = header.replace('\\', '/').split('/')
+            namespace = path_parts[0] if len(path_parts) > 1 else alias
             register_alias(alias, namespace)
             return ('IMPORT_CPP', header, alias, use_angles), start_index + 1
         else:
+            # C library: register alias for dot‑to‑underscore
+            if custom_alias:
+                alias = custom_alias
+            else:
+                alias = os.path.basename(header)
+                alias = re.sub(r'\.(h|hpp)$', '', alias)
+            register_c_alias(alias, alias)
             return ('IMPORT_C', header, use_angles), start_index + 1
 
     def generate(self, node, indent=''):

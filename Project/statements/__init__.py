@@ -1,15 +1,28 @@
 import re
 import os
 
-_handlers = []
-_alias_map = {}
-_var_types = {}  # name -> type string (e.g., 'std::string', 'int', 'double', 'sqlite3*', etc.)
-
-# C functions that require const char* for string arguments
-C_STRING_FUNCTIONS = {
-    'sqlite3_open', 'sqlite3_exec', 'sqlite3_prepare_v2',
-    'sqlite3_bind_text', 'sqlite3_column_text', 'sqlite3_errmsg'
+# ---------- Global state for type tracking ----------
+_var_types = {}
+_C_STRING_FUNCTIONS = {
+    'strlen', 'strcmp', 'strcpy', 'strcat', 'strchr', 'strstr',
+    'printf', 'sprintf', 'fprintf', 'puts', 'fputs',
+    'fopen', 'fclose', 'fread', 'fwrite',
+    'sqlite3_open', 'sqlite3_exec', 'sqlite3_get_table', 'sqlite3_free',
+    'sqlite3_close', 'sqlite3_errmsg'
 }
+C_STRING_FUNCTIONS = _C_STRING_FUNCTIONS
+
+def set_var_type(name, cpp_type):
+    _var_types[name] = cpp_type
+
+def get_var_type(name):
+    return _var_types.get(name)
+
+def clear_var_types():
+    _var_types.clear()
+
+# ---------- Handler registry ----------
+_handlers = []
 
 def register_handler(handler):
     _handlers.append(handler)
@@ -17,23 +30,34 @@ def register_handler(handler):
 def get_handlers():
     return _handlers
 
+# ---------- Alias handling for C++ namespaces ----------
+_alias_map = {}
+
 def register_alias(alias, namespace):
     _alias_map[alias] = namespace
 
 def resolve_alias(alias):
     return _alias_map.get(alias, alias)
 
-def set_var_type(name: str, typ: str):
-    _var_types[name] = typ
+def is_cpp_alias(alias):
+    return alias in _alias_map
 
-def get_var_type(name: str) -> str:
-    return _var_types.get(name, '')
+# ---------- Alias handling for C libraries ----------
+_c_alias_map = {}
 
-def clear_var_types():
-    _var_types.clear()
+def register_c_alias(alias, prefix):
+    _c_alias_map[alias] = prefix
 
-def strip_comments(line: str) -> str:
-    """Remove -- comment from line, respecting quotes."""
+def resolve_c_alias(alias):
+    return _c_alias_map.get(alias)
+
+# ---------- C / C++ header detection ----------
+def is_c_header(header_path):
+    ext = os.path.splitext(header_path)[1].lower()
+    return ext in ('.h', '.c') and not header_path.endswith('.hpp')
+
+# ---------- Comment stripping ----------
+def strip_comments(line):
     in_quotes = False
     for i, ch in enumerate(line):
         if ch == '"':
@@ -42,51 +66,81 @@ def strip_comments(line: str) -> str:
             return line[:i].rstrip()
     return line
 
-def _split_args(raw_args):
-    """Split comma-separated arguments, respecting quotes. Returns list."""
-    if not raw_args.strip():
-        return []
+# ---------- Helper: split arguments respecting parentheses and quotes ----------
+def _split_args(args_str):
     args = []
-    current = ''
+    current = []
+    paren_depth = 0
     in_quotes = False
-    for ch in raw_args:
-        if ch == '"':
-            in_quotes = not in_quotes
-            current += ch
-        elif ch == ',' and not in_quotes:
-            args.append(current.strip())
-            current = ''
+    for ch in args_str:
+        if ch == '"' and not in_quotes:
+            in_quotes = True
+            current.append(ch)
+        elif ch == '"' and in_quotes:
+            in_quotes = False
+            current.append(ch)
+        elif ch == '(' and not in_quotes:
+            paren_depth += 1
+            current.append(ch)
+        elif ch == ')' and not in_quotes:
+            paren_depth -= 1
+            current.append(ch)
+        elif ch == ',' and not in_quotes and paren_depth == 0:
+            args.append(''.join(current).strip())
+            current = []
         else:
-            current += ch
-    args.append(current.strip())
+            current.append(ch)
+    if current:
+        args.append(''.join(current).strip())
     return args
 
+# ---------- Function call parsing (handles nested parentheses) ----------
 def parse_function_call(expr):
-    # Match alias.func(args)  (allow empty args)
-    m = re.match(r'^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\((.*)\)$', expr)
-    if m:
-        alias = m.group(1)
-        func = m.group(2)
-        raw_args = m.group(3)
-        args = _split_args(raw_args)
-        full_namespace = resolve_alias(alias)
-        full_func = f'{full_namespace}::{func}'
-        return full_func, args
+    # Find the matching closing parenthesis for the first '('
+    idx = expr.find('(')
+    if idx == -1:
+        return None
+    func_name = expr[:idx].strip()
+    # Find matching closing parenthesis
+    paren_count = 0
+    end = idx
+    for i, ch in enumerate(expr):
+        if i < idx:
+            continue
+        if ch == '(':
+            paren_count += 1
+        elif ch == ')':
+            paren_count -= 1
+            if paren_count == 0:
+                end = i
+                break
+    if end == idx:
+        return None
+    args_str = expr[idx+1:end].strip()
+    args = _split_args(args_str)
 
-    # Match func(args)  (allow empty args)
-    m = re.match(r'^([a-zA-Z_]\w*)\((.*)\)$', expr)
-    if m:
-        func = m.group(1)
-        raw_args = m.group(2)
-        args = _split_args(raw_args)
-        return func, args
+    # Transform the function name if it contains dots
+    if '.' in func_name:
+        parts = func_name.split('.')
+        alias = parts[0]
+        # C library alias?
+        c_prefix = resolve_c_alias(alias)
+        if c_prefix:
+            # Replace all dots with underscores
+            new_func = '_'.join(parts)
+            return new_func, args
+        # C++ namespace alias?
+        if is_cpp_alias(alias):
+            namespace = _alias_map[alias]
+            if len(parts) == 1:
+                new_func = namespace
+            else:
+                new_func = namespace + '::' + '::'.join(parts[1:])
+            return new_func, args
+    # No alias – keep as is
+    return func_name, args
 
-    return None
-
-def is_c_header(header_path):
-    ext = os.path.splitext(header_path)[1].lower()
-    return ext in ('.h', '.c')
-
+# ---------- Error suggestion ----------
 def suggest_fix(line):
     line = line.strip()
     if line.startswith('set '):
@@ -95,18 +149,19 @@ def suggest_fix(line):
         return "Assignment should use 'variable = expression'. Example: " + line
     return "Check the statement syntax."
 
+# ---------- Block body parsing ----------
 def parse_block_body(lines, start_index, base_indent):
     def get_indent(line):
         return len(line) - len(line.lstrip())
 
     body = []
     i = start_index
+    from . import get_handlers
     handlers = get_handlers()
+
     while i < len(lines):
         raw_line = lines[i]
-        # Strip comments before checking emptiness
-        no_comment = strip_comments(raw_line)
-        stripped = no_comment.strip()
+        stripped = strip_comments(raw_line).strip()
         if not stripped:
             i += 1
             continue
@@ -117,17 +172,16 @@ def parse_block_body(lines, start_index, base_indent):
         handled = False
         for h in handlers:
             if h.can_handle(stripped):
-                # Parse using the original raw lines (the handler will strip comments inside)
                 node, i = h.parse(lines, i)
                 body.append((h, node))
                 handled = True
                 break
         if not handled:
-            # Keep line number, but store stripped version for error reporting
             body.append((i+1, stripped))
             i += 1
     return body, i
 
+# ---------- Base handler class ----------
 class StatementHandler:
     keywords = []
     required_headers = set()
