@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments
 
 class WhileHandler(StatementHandler):
     keywords = ['while ']
@@ -13,8 +13,9 @@ class WhileHandler(StatementHandler):
 
         first_line = lines[start_index].rstrip('\n')
         base_indent = get_indent(first_line)
+        stripped = strip_comments(first_line).strip()
 
-        m = re.match(r'^while\s+(.+)\s*:\s*$', first_line.strip())
+        m = re.match(r'^while\s+(.+)\s*:\s*$', stripped)
         if not m:
             raise SyntaxError("Expected: while <condition>:")
         condition = m.group(1)

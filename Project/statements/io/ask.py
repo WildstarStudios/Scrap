@@ -1,11 +1,14 @@
 import re
-from .. import StatementHandler
+from .. import StatementHandler, strip_comments
 
 class AskHandler(StatementHandler):
     keywords = ['ask ']
 
+    def can_handle(self, line):
+        return bool(re.match(r'^ask ".*" into [a-zA-Z_]\w*$', line.strip()))
+
     def parse(self, lines, start_index):
-        line = lines[start_index].strip()
+        line = strip_comments(lines[start_index]).strip()
         m = re.match(r'^ask "((?:[^"\\]|\\.)*)" into ([a-zA-Z_]\w*)$', line)
         if not m:
             raise SyntaxError("Expected: ask \"prompt\" into variable_name")

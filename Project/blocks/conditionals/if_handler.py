@@ -1,5 +1,5 @@
 import re
-from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix
+from statements import StatementHandler, parse_block_body, get_handlers, suggest_fix, strip_comments
 
 class IfHandler(StatementHandler):
     keywords = ['if ']
@@ -14,7 +14,7 @@ class IfHandler(StatementHandler):
 
         first_line = lines[start_index].rstrip('\n')
         base_indent = get_indent(first_line)
-        stripped = first_line.strip()
+        stripped = strip_comments(first_line).strip()
 
         m = re.match(r'^if\s+(.+?)(?:\s+then)?\s*:\s*$', stripped)
         if not m:
@@ -27,7 +27,7 @@ class IfHandler(StatementHandler):
         i = start_index + 1
         while i < len(lines):
             raw_line = lines[i]
-            stripped_line = raw_line.strip()
+            stripped_line = strip_comments(raw_line).strip()
             if not stripped_line:
                 i += 1
                 continue
@@ -44,7 +44,7 @@ class IfHandler(StatementHandler):
                     current_body = []
                     i += 1
                     continue
-                # else (allow any whitespace before colon)
+                # else
                 elif stripped_line.startswith('else') and stripped_line.endswith(':'):
                     branches.append((current_cond, current_body))
                     current_cond = None

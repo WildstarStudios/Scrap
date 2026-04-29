@@ -1,10 +1,13 @@
-from .. import StatementHandler
+from .. import StatementHandler, strip_comments
 
 class PauseHandler(StatementHandler):
     keywords = ['pause']
 
+    def can_handle(self, line):
+        return line.strip() == 'pause'
+
     def parse(self, lines, start_index):
-        line = lines[start_index].strip()
+        line = strip_comments(lines[start_index]).strip()
         if line != 'pause':
             raise SyntaxError("Expected 'pause'")
         return ('PAUSE', None), start_index + 1

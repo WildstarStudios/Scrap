@@ -3,6 +3,13 @@ import os
 
 _handlers = []
 _alias_map = {}
+_var_types = {}  # name -> type string (e.g., 'std::string', 'int', 'double', 'sqlite3*', etc.)
+
+# C functions that require const char* for string arguments
+C_STRING_FUNCTIONS = {
+    'sqlite3_open', 'sqlite3_exec', 'sqlite3_prepare_v2',
+    'sqlite3_bind_text', 'sqlite3_column_text', 'sqlite3_errmsg'
+}
 
 def register_handler(handler):
     _handlers.append(handler)
@@ -16,7 +23,29 @@ def register_alias(alias, namespace):
 def resolve_alias(alias):
     return _alias_map.get(alias, alias)
 
+def set_var_type(name: str, typ: str):
+    _var_types[name] = typ
+
+def get_var_type(name: str) -> str:
+    return _var_types.get(name, '')
+
+def clear_var_types():
+    _var_types.clear()
+
+def strip_comments(line: str) -> str:
+    """Remove -- comment from line, respecting quotes."""
+    in_quotes = False
+    for i, ch in enumerate(line):
+        if ch == '"':
+            in_quotes = not in_quotes
+        elif ch == '-' and i+1 < len(line) and line[i+1] == '-' and not in_quotes:
+            return line[:i].rstrip()
+    return line
+
 def _split_args(raw_args):
+    """Split comma-separated arguments, respecting quotes. Returns list."""
+    if not raw_args.strip():
+        return []
     args = []
     current = ''
     in_quotes = False
@@ -33,7 +62,8 @@ def _split_args(raw_args):
     return args
 
 def parse_function_call(expr):
-    m = re.match(r'^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\((.+)\)$', expr)
+    # Match alias.func(args)  (allow empty args)
+    m = re.match(r'^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)\((.*)\)$', expr)
     if m:
         alias = m.group(1)
         func = m.group(2)
@@ -43,7 +73,8 @@ def parse_function_call(expr):
         full_func = f'{full_namespace}::{func}'
         return full_func, args
 
-    m = re.match(r'^([a-zA-Z_]\w*)\((.+)\)$', expr)
+    # Match func(args)  (allow empty args)
+    m = re.match(r'^([a-zA-Z_]\w*)\((.*)\)$', expr)
     if m:
         func = m.group(1)
         raw_args = m.group(2)
@@ -73,7 +104,9 @@ def parse_block_body(lines, start_index, base_indent):
     handlers = get_handlers()
     while i < len(lines):
         raw_line = lines[i]
-        stripped = raw_line.strip()
+        # Strip comments before checking emptiness
+        no_comment = strip_comments(raw_line)
+        stripped = no_comment.strip()
         if not stripped:
             i += 1
             continue
@@ -84,11 +117,13 @@ def parse_block_body(lines, start_index, base_indent):
         handled = False
         for h in handlers:
             if h.can_handle(stripped):
+                # Parse using the original raw lines (the handler will strip comments inside)
                 node, i = h.parse(lines, i)
                 body.append((h, node))
                 handled = True
                 break
         if not handled:
+            # Keep line number, but store stripped version for error reporting
             body.append((i+1, stripped))
             i += 1
     return body, i

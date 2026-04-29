@@ -1,5 +1,5 @@
 import re
-from .. import StatementHandler
+from .. import StatementHandler, strip_comments
 
 class FreeHandler(StatementHandler):
     keywords = ['free var ']
@@ -8,7 +8,7 @@ class FreeHandler(StatementHandler):
         return bool(re.match(r'^free var [a-zA-Z_]\w*$', line.strip()))
 
     def parse(self, lines, start_index):
-        line = lines[start_index].strip()
+        line = strip_comments(lines[start_index]).strip()
         m = re.match(r'^free var ([a-zA-Z_]\w*)$', line)
         if not m:
             raise SyntaxError("Expected: free var variable_name")

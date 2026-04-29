@@ -1,5 +1,5 @@
 import re
-from .. import StatementHandler
+from .. import StatementHandler, strip_comments
 
 class ListVarHandler(StatementHandler):
     keywords = []
@@ -9,17 +9,19 @@ class ListVarHandler(StatementHandler):
         return stripped.startswith('var ') and '= [' in stripped
 
     def parse(self, lines, start_index):
-        # Collect lines until matching closing bracket
+        # Collect raw lines until matching closing bracket
         full_decl = lines[start_index].rstrip('\n')
         i = start_index + 1
         bracket_count = full_decl.count('[') - full_decl.count(']')
         while bracket_count > 0 and i < len(lines):
-            line = lines[i].rstrip('\n')
-            full_decl += ' ' + line
-            bracket_count += line.count('[') - line.count(']')
+            raw = lines[i].rstrip('\n')
+            full_decl += ' ' + raw
+            bracket_count += raw.count('[') - raw.count(']')
             i += 1
 
-        # Now parse the full declaration (may span lines)
+        # Strip comments from the whole declaration
+        full_decl = strip_comments(full_decl).strip()
+
         m = re.match(r'^var\s+([a-zA-Z_]\w*)\s*(?:as\s+([^\s=]+))?\s*=\s*\[(.*?)\]\s*(?:\s+as\s+([^\s]+))?\s*$', full_decl, re.DOTALL)
         if not m:
             raise SyntaxError("Expected: var name [as Type] = [elem1, ...]  or  var name = [elem1, ...] as Type")

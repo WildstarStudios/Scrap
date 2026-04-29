@@ -7,7 +7,7 @@ import sys
 import os
 import importlib
 import inspect
-from statements import StatementHandler, register_handler, get_handlers
+from statements import StatementHandler, register_handler, get_handlers, clear_var_types
 
 def strip_comments(line):
     """Remove -- comment from line, respecting quotes."""
@@ -97,6 +97,9 @@ def collect_all_headers(nodes):
     return headers
 
 def main():
+    # Clear variable types from any previous run
+    clear_var_types()
+
     if len(sys.argv) != 3:
         print("Usage: python scrap.py input.scrap output.cpp")
         sys.exit(1)

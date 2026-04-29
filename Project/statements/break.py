@@ -1,10 +1,13 @@
-from . import StatementHandler
+from . import StatementHandler, strip_comments
 
 class BreakHandler(StatementHandler):
     keywords = ['break']
 
+    def can_handle(self, line):
+        return line.strip() == 'break'
+
     def parse(self, lines, start_index):
-        line = lines[start_index].strip()
+        line = strip_comments(lines[start_index]).strip()
         if line != 'break':
             raise SyntaxError("Expected 'break'")
         return ('BREAK', None), start_index + 1
