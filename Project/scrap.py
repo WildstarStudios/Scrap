@@ -41,7 +41,52 @@ def discover_handlers():
                             register_handler(obj())
 
 def collect_all_headers(nodes):
+    """Recursively collect #include headers from a list of (handler, node) pairs."""
     headers = set()
+
+    def process_body(items):
+        for item in items:
+            if isinstance(item, tuple):
+                if len(item) == 2 and isinstance(item[0], int):
+                    _, stmt = item
+                    for h in get_handlers():
+                        if not isinstance(h, StatementHandler):
+                            continue
+                        if h.can_handle(stmt):
+                            rh = h.required_headers
+                            if callable(rh):
+                                headers.update(rh(None))
+                            else:
+                                headers.update(rh)
+                            break
+                else:
+                    h, n = item
+                    if not isinstance(h, StatementHandler):
+                        continue
+                    rh = h.required_headers
+                    if callable(rh):
+                        headers.update(rh(n))
+                    else:
+                        headers.update(rh)
+                    if n[0] == 'IF':
+                        branches = n[1]
+                        for _, body_data in branches:
+                            for body_items, deferred_items in body_data:
+                                process_body(body_items)
+                                process_body(deferred_items)
+                    elif n[0] in ('WHILE', 'REPEAT'):
+                        _, body, defs = n[1]
+                        process_body(body)
+                        process_body(defs)
+                    elif n[0] == 'FOR':
+                        _, _, body, defs = n[1]
+                        process_body(body)
+                        process_body(defs)
+                    elif n[0] == 'FUNC':
+                        _, _, _, body, defs = n[1]
+                        process_body(body)
+                        process_body(defs)
+
     for handler, node in nodes:
         if node[0] == 'DEFER':
             continue
@@ -50,65 +95,25 @@ def collect_all_headers(nodes):
             headers.update(rh(node))
         else:
             headers.update(rh)
-
-        # Recursively handle nested blocks (including function bodies)
         if node[0] == 'IF':
             branches = node[1]
             for _, body_data in branches:
                 for body_items, deferred_items in body_data:
-                    for item in body_items:
-                        if isinstance(item, tuple):
-                            if len(item) == 2 and isinstance(item[0], int):
-                                _, stmt = item
-                                for h in get_handlers():
-                                    if not isinstance(h, StatementHandler):
-                                        continue
-                                    if h.can_handle(stmt):
-                                        rh2 = h.required_headers
-                                        if callable(rh2):
-                                            headers.update(rh2(None))
-                                        else:
-                                            headers.update(rh2)
-                                        break
-                            else:
-                                h, n = item
-                                if not isinstance(h, StatementHandler):
-                                    continue
-                                rh2 = h.required_headers
-                                if callable(rh2):
-                                    headers.update(rh2(n))
-                                else:
-                                    headers.update(rh2)
-        elif node[0] in ('WHILE', 'REPEAT', 'FOR', 'FUNC'):
-            if node[0] == 'FOR':
-                body_items = node[1][2]
-            elif node[0] == 'FUNC':
-                body_items = node[1][4]
-            else:
-                body_items = node[1][1]
-            for item in body_items:
-                if isinstance(item, tuple):
-                    if len(item) == 2 and isinstance(item[0], int):
-                        _, stmt = item
-                        for h in get_handlers():
-                            if not isinstance(h, StatementHandler):
-                                continue
-                            if h.can_handle(stmt):
-                                rh2 = h.required_headers
-                                if callable(rh2):
-                                    headers.update(rh2(None))
-                                else:
-                                    headers.update(rh2)
-                                break
-                    else:
-                        h, n = item
-                        if not isinstance(h, StatementHandler):
-                            continue
-                        rh2 = h.required_headers
-                        if callable(rh2):
-                            headers.update(rh2(n))
-                        else:
-                            headers.update(rh2)
+                    process_body(body_items)
+                    process_body(deferred_items)
+        elif node[0] in ('WHILE', 'REPEAT'):
+            _, body, defs = node[1]
+            process_body(body)
+            process_body(defs)
+        elif node[0] == 'FOR':
+            _, _, body, defs = node[1]
+            process_body(body)
+            process_body(defs)
+        elif node[0] == 'FUNC':
+            _, _, _, body, defs = node[1]
+            process_body(body)
+            process_body(defs)
+
     return headers
 
 def main():
@@ -158,12 +163,18 @@ def main():
             print(f"Error on line {i+1} of {input_file}: Unknown statement: {line}", file=sys.stderr)
             sys.exit(1)
 
-    # Collect headers from both functions and top-level nodes
+    # Semantic analysis
+    from statements.symbol_table import SemanticAnalyzer
+    try:
+        SemanticAnalyzer.analyze(top_level_nodes, functions)
+    except SyntaxError as e:
+        print(f"Semantic error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Collect headers
     headers = collect_all_headers(top_level_nodes + functions)
 
-    # Force inclusion of <iostream> because log/ask/pause use it
-    headers.add('<iostream>')
-
+    # Pre-main lines (e.g. extern "C" wraps)
     pre_main_lines = []
     for handler, node in top_level_nodes + functions:
         if not isinstance(handler, StatementHandler):
@@ -177,20 +188,19 @@ def main():
     if headers:
         cpp_lines.extend([f'#include {h}' for h in sorted(headers)])
     cpp_lines.extend(pre_main_lines)
-    cpp_lines.append('')
 
-    # Generate forward declarations for all user functions
-    for handler, node in functions:
-        if not isinstance(handler, StatementHandler):
-            continue
-        if hasattr(handler, 'forward_declaration'):
-            fwd = handler.forward_declaration(node)
-            if fwd:
-                cpp_lines.append(fwd)
+    # Forward declarations for user functions
     if functions:
         cpp_lines.append('')
+        for handler, node in functions:
+            if not isinstance(handler, StatementHandler):
+                continue
+            if hasattr(handler, 'forward_declaration'):
+                fwd = handler.forward_declaration(node)
+                if fwd:
+                    cpp_lines.append(fwd)
 
-    # Generate function definitions
+    # Function definitions
     for handler, node in functions:
         if not isinstance(handler, StatementHandler):
             continue
@@ -205,27 +215,31 @@ def main():
             break
 
     # Generate real C++ int main()
-    cpp_lines.append('')
-    cpp_lines.append('int main() {')
-    body_indent = '    '
+    if user_main_node or top_level_nodes:
+        cpp_lines.append('')
+        cpp_lines.append('int main() {')
+        body_indent = '    '
 
-    deferred_main = []
-    for handler, node in top_level_nodes:
-        if node[0] == 'DEFER':
-            deferred_main.append(node)
-        else:
-            cpp_lines.append(handler.generate(node, body_indent))
+        deferred_main = []
+        for handler, node in top_level_nodes:
+            if node[0] == 'DEFER':
+                deferred_main.append(node)
+            else:
+                gen = handler.generate(node, body_indent)
+                if gen.strip():   # skip empty lines (e.g., from import)
+                    cpp_lines.append(gen)
 
-    if user_main_node:
-        return_type = user_main_node[1][3]
-        if return_type == 'int':
-            cpp_lines.append(f'{body_indent}return user_main();')
-        else:
-            cpp_lines.append(f'{body_indent}user_main();')
-            cpp_lines.append(f'{body_indent}return 0;')
+        if user_main_node:
+            return_type = user_main_node[1][3]
+            if return_type == 'int':
+                cpp_lines.append(f'{body_indent}return user_main();')
+            else:
+                cpp_lines.append(f'{body_indent}user_main();')
+                cpp_lines.append(f'{body_indent}return 0;')
 
-    cpp_lines.extend(generate_deferred_lines(deferred_main, body_indent))
-    cpp_lines.append('}')
+        cpp_lines.extend(generate_deferred_lines(deferred_main, body_indent))
+        cpp_lines.append('}')
+
     final_code = '\n'.join(cpp_lines) + '\n'
 
     with open(output_file, 'w') as f:

@@ -16,3 +16,8 @@ class BreakHandler(StatementHandler):
         return f'{indent}break;'
 
     required_headers = set()
+
+    # ---------- Semantic Check ----------
+    def check_semantics(self, node, symbols):
+        if symbols.loop_depth == 0:
+            raise SyntaxError("'break' outside of loop")

@@ -25,3 +25,17 @@ class ReturnHandler(StatementHandler):
             return f'{indent}return {expr};'
 
     required_headers = set()
+
+    # ---------- Semantic Check ----------
+    def check_semantics(self, node, symbols):
+        expr = node[1]
+        expected = symbols.current_function_ret
+        if expected is None:
+            # not inside a function (shouldn't happen if parsing is correct)
+            return
+        if expected == 'void':
+            if expr is not None:
+                raise SyntaxError("Cannot return a value from a void function")
+        else:
+            if expr is None:
+                raise SyntaxError(f"Expected return expression of type '{expected}'")

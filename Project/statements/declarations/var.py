@@ -161,3 +161,29 @@ class VarHandler(StatementHandler):
             return base_type + '*'
 
         return scrap_type
+
+    # ---------- Semantic Check ----------
+    def check_semantics(self, node, symbols):
+        kind = node[0]
+        name = node[1]
+        if kind == 'DEFINE_VAR_UNINIT':
+            cpp_type = node[2]
+            symbols.declare(name, cpp_type)
+        elif kind in ('DEFINE_VAR_INT', 'DEFINE_VAR_FLOAT', 'DEFINE_VAR_BOOL',
+                      'DEFINE_VAR_STRING', 'DEFINE_VAR_FUNCCALL', 'DEFINE_VAR_NEW',
+                      'DEFINE_VAR_NULLPTR', 'DEFINE_VAR_EXPR'):
+            cpp_type = node[-1]  # last element is cpp_type
+            # Type compatibility checks
+            if kind == 'DEFINE_VAR_STRING':
+                if cpp_type != 'std::string' and cpp_type != 'auto':
+                    raise SyntaxError(f"Cannot assign string value to variable '{name}' of type '{cpp_type}'")
+            elif kind == 'DEFINE_VAR_INT':
+                if cpp_type not in ('int', 'long', 'long long', 'auto'):
+                    raise SyntaxError(f"Cannot assign integer to '{cpp_type}' variable '{name}'")
+            elif kind == 'DEFINE_VAR_BOOL':
+                if cpp_type != 'bool' and cpp_type != 'auto':
+                    raise SyntaxError(f"Cannot assign bool to '{cpp_type}' variable '{name}'")
+            elif kind == 'DEFINE_VAR_NULLPTR':
+                if not cpp_type.endswith('*') and cpp_type != 'auto':
+                    raise SyntaxError(f"Cannot assign nullptr to non‑pointer type '{cpp_type}'")
+            symbols.declare(name, cpp_type)

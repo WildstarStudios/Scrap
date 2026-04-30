@@ -34,7 +34,7 @@ class SetHandler(StatementHandler):
         call_info = parse_function_call(rhs)
         if call_info:
             full_func, args, is_c = call_info
-            args = wrap_c_args(args, is_c)          # <-- automatic .c_str() if needed
+            args = wrap_c_args(args, is_c)
             return ('SET_FUNCCALL', lhs, full_func, args), start_index + 1
 
         # 4. Numeric, nullptr, or generic expression
@@ -85,3 +85,26 @@ class SetHandler(StatementHandler):
             elif ch == '=' and not in_quotes:
                 return line[:i], line[i+1:]
         return line, ''
+
+    # ---------- Semantic Check ----------
+    def check_semantics(self, node, symbols):
+        lhs = node[1]
+        var_sym = symbols.lookup(lhs)
+        if var_sym is None:
+            raise SyntaxError(f"Variable '{lhs}' not declared")
+        if var_sym.is_function:
+            raise SyntaxError(f"Cannot assign to function '{lhs}'")
+        kind = node[0]
+        t = var_sym.cpp_type
+        if kind == 'SET_STRING' and t != 'std::string':
+            raise SyntaxError(f"Cannot assign string to variable '{lhs}' of type '{t}'")
+        if kind == 'SET_INT' and t not in ('int', 'long', 'long long', 'auto'):
+            raise SyntaxError(f"Cannot assign integer to variable '{lhs}' of type '{t}'")
+        if kind == 'SET_FLOAT' and t not in ('float', 'double', 'auto'):
+            raise SyntaxError(f"Cannot assign float to variable '{lhs}' of type '{t}'")
+        if kind == 'SET_FUNCCALL':
+            func_name = node[2]
+            func_sym = symbols.lookup(func_name)
+            if func_sym:
+                if func_sym.is_function and func_sym.cpp_type != t and t != 'auto':
+                    print(f"Warning: assigning return of '{func_name}' (type '{func_sym.cpp_type}') to variable '{lhs}' of type '{t}'", file=__import__('sys').stderr)

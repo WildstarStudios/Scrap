@@ -38,3 +38,16 @@ class FunctionCallHandler(StatementHandler):
 
     def required_headers(self, node=None):
         return set()
+
+    # ---------- Semantic Check ----------
+    def check_semantics(self, node, symbols):
+        call_expr = node[1]
+        call_info = parse_function_call(call_expr)
+        if call_info:
+            func_name, args, is_c = call_info
+            func_sym = symbols.lookup(func_name)
+            if func_sym:
+                if not func_sym.is_function:
+                    raise SyntaxError(f"'{func_name}' is not a function")
+                if len(args) != len(func_sym.param_types):
+                    raise SyntaxError(f"Function '{func_name}' expects {len(func_sym.param_types)} arguments, got {len(args)}")

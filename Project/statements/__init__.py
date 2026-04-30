@@ -127,10 +127,6 @@ def parse_function_call(expr):
         if c_prefix:
             is_c_call = True
             # Build the C function name dynamically:
-            # - parts[0] is the alias (already the C prefix).
-            # - For each subsequent part:
-            #   * if it starts with uppercase -> concatenate directly (e.g., glfw.Init -> glfwInit)
-            #   * otherwise -> prepend an underscore (e.g., sqlite3.open -> sqlite3_open)
             new_func = parts[0]
             for part in parts[1:]:
                 if part and part[0].isupper():
@@ -258,3 +254,7 @@ class StatementHandler:
 
     def generate(self, node, indent='') -> str:
         raise NotImplementedError
+
+    # New optional method for semantic checks
+    def check_semantics(self, node, symbols):
+        pass
