@@ -1,251 +1,142 @@
 #!/usr/bin/env python3
-"""
-Scrap Transpiler v0.3 – with functions, return, and proper entry point.
-"""
-
+"""Scrap transpiler – high‑level Pythonic language to C++."""
 import sys
-import os
-import importlib
-import inspect
-from statements import StatementHandler, register_handler, get_handlers, clear_var_types, generate_deferred_lines
+from scrap.core.handler_base import discover_handlers, strip_comments, get_indent, generate_deferred_lines
+from scrap.core.symbol_table import SemanticAnalyzer
 
-def strip_comments(line):
-    """Remove -- comment from line, respecting quotes."""
-    in_quotes = False
-    for i, ch in enumerate(line):
-        if ch == '"':
-            in_quotes = not in_quotes
-        elif ch == '-' and i+1 < len(line) and line[i+1] == '-' and not in_quotes:
-            return line[:i].rstrip()
-    return line
-
-def discover_handlers():
-    base_dir = os.path.dirname(__file__)
-    for folder in ['statements', 'blocks']:
-        folder_path = os.path.join(base_dir, folder)
-        if not os.path.isdir(folder_path):
+def join_multiline_statements(lines):
+    """Join lines that end with a comma, open paren or bracket with the next line."""
+    joined = []
+    i = 0
+    while i < len(lines):
+        raw = lines[i].rstrip('\n')
+        if not raw.strip():
+            i += 1
             continue
-        for root, dirs, files in os.walk(folder_path):
-            for filename in files:
-                if filename.endswith('.py') and filename != '__init__.py':
-                    rel_path = os.path.relpath(root, base_dir)
-                    module_parts = rel_path.split(os.sep) + [filename[:-3]]
-                    module_name = '.'.join(module_parts)
-                    try:
-                        module = importlib.import_module(module_name)
-                    except ImportError as e:
-                        print(f"Warning: could not import {module_name}: {e}", file=sys.stderr)
-                        continue
-                    for name, obj in inspect.getmembers(module, inspect.isclass):
-                        if issubclass(obj, StatementHandler) and obj is not StatementHandler:
-                            register_handler(obj())
-
-def collect_all_headers(nodes):
-    """Recursively collect #include headers from a list of (handler, node) pairs."""
-    headers = set()
-
-    def process_body(items):
-        for item in items:
-            if isinstance(item, tuple):
-                if len(item) == 2 and isinstance(item[0], int):
-                    _, stmt = item
-                    for h in get_handlers():
-                        if not isinstance(h, StatementHandler):
-                            continue
-                        if h.can_handle(stmt):
-                            rh = h.required_headers
-                            if callable(rh):
-                                headers.update(rh(None))
-                            else:
-                                headers.update(rh)
-                            break
-                else:
-                    h, n = item
-                    if not isinstance(h, StatementHandler):
-                        continue
-                    rh = h.required_headers
-                    if callable(rh):
-                        headers.update(rh(n))
-                    else:
-                        headers.update(rh)
-                    if n[0] == 'IF':
-                        branches = n[1]
-                        for _, body_data in branches:
-                            for body_items, deferred_items in body_data:
-                                process_body(body_items)
-                                process_body(deferred_items)
-                    elif n[0] in ('WHILE', 'REPEAT'):
-                        _, body, defs = n[1]
-                        process_body(body)
-                        process_body(defs)
-                    elif n[0] == 'FOR':
-                        _, _, body, defs = n[1]
-                        process_body(body)
-                        process_body(defs)
-                    elif n[0] == 'FUNC':
-                        _, _, _, body, defs = n[1]
-                        process_body(body)
-                        process_body(defs)
-
-    for handler, node in nodes:
-        if node[0] == 'DEFER':
-            continue
-        rh = handler.required_headers
-        if callable(rh):
-            headers.update(rh(node))
-        else:
-            headers.update(rh)
-        if node[0] == 'IF':
-            branches = node[1]
-            for _, body_data in branches:
-                for body_items, deferred_items in body_data:
-                    process_body(body_items)
-                    process_body(deferred_items)
-        elif node[0] in ('WHILE', 'REPEAT'):
-            _, body, defs = node[1]
-            process_body(body)
-            process_body(defs)
-        elif node[0] == 'FOR':
-            _, _, body, defs = node[1]
-            process_body(body)
-            process_body(defs)
-        elif node[0] == 'FUNC':
-            _, _, _, body, defs = node[1]
-            process_body(body)
-            process_body(defs)
-
-    return headers
+        # If line ends with , ( [ and next line is indented more, join them.
+        while (raw.strip().endswith(',') or raw.strip().endswith('(') or raw.strip().endswith('[')) \
+              and i + 1 < len(lines):
+            next_raw = lines[i + 1].rstrip('\n')
+            if not next_raw.strip():
+                # skip empty lines between parts
+                i += 1
+                continue
+            if get_indent(next_raw) <= get_indent(raw):
+                break
+            raw = raw + ' ' + next_raw.lstrip()
+            i += 1
+        joined.append(raw)
+        i += 1
+    return joined
 
 def main():
-    clear_var_types()
-
     if len(sys.argv) != 3:
         print("Usage: python scrap.py input.scrap output.cpp")
         sys.exit(1)
 
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
+    with open(sys.argv[1], 'r') as f:
+        source = [line.rstrip('\n') for line in f.readlines()]
 
-    with open(input_file, 'r') as f:
-        source_lines = f.readlines()
+    # Allow multi‑line function calls (comma / paren continuation)
+    source = join_multiline_statements(source)
 
     discover_handlers()
-    handlers = get_handlers()
 
-    # Parse all top-level nodes
-    top_level_nodes = []
+    top_nodes = []
     functions = []
     i = 0
-    while i < len(source_lines):
-        raw_line = source_lines[i].rstrip('\n')
-        line = strip_comments(raw_line).strip()
-        if not line:
+    while i < len(source):
+        raw = source[i]
+        stripped = strip_comments(raw).strip()
+        if not stripped:
             i += 1
             continue
+        if get_indent(raw) != 0:
+            raise SyntaxError(f"Unexpected indentation at line {i+1}")
 
         handled = False
-        for handler in handlers:
-            if not isinstance(handler, StatementHandler):
-                continue
-            if handler.can_handle(line):
-                try:
-                    node, i = handler.parse(source_lines, i)
-                    if node[0] == 'FUNC':
-                        functions.append((handler, node))
-                    else:
-                        top_level_nodes.append((handler, node))
-                    handled = True
-                    break
-                except SyntaxError as e:
-                    print(f"Error on line {i+1} of {input_file}: {e}", file=sys.stderr)
-                    sys.exit(1)
+        for h in discover_handlers():
+            if h.can_handle(stripped):
+                node, i = h.parse(source, i)
+                if node[0] == 'FUNC':
+                    functions.append((h, node))
+                else:
+                    top_nodes.append((h, node))
+                handled = True
+                break
         if not handled:
-            print(f"Error on line {i+1} of {input_file}: Unknown statement: {line}", file=sys.stderr)
-            sys.exit(1)
+            raise SyntaxError(f"Unknown statement at line {i+1}: {stripped}")
 
-    # Semantic analysis
-    from statements.symbol_table import SemanticAnalyzer
-    try:
-        SemanticAnalyzer.analyze(top_level_nodes, functions)
-    except SyntaxError as e:
-        print(f"Semantic error: {e}", file=sys.stderr)
-        sys.exit(1)
+    SemanticAnalyzer.analyze(top_nodes, functions)
 
-    # Collect headers
-    headers = collect_all_headers(top_level_nodes + functions)
+    # Recursive header collection from all statements (handlers, block bodies)
+    def collect_headers_from_nodes(nodes):
+        hdrs = set()
+        for h, n in nodes:
+            rh = getattr(h, 'required_headers', set())
+            if callable(rh):
+                rh = rh(n)
+            hdrs.update(rh)
 
-    # Pre-main lines (e.g. extern "C" wraps)
-    pre_main_lines = []
-    for handler, node in top_level_nodes + functions:
-        if not isinstance(handler, StatementHandler):
-            continue
-        if hasattr(handler, 'generate_pre_main'):
-            pm = handler.generate_pre_main(node)
-            if pm:
-                pre_main_lines.append(pm)
+            kind = n[0]
+            if kind == 'FUNC':
+                _, _, _, body, deferred = n[1]
+                hdrs.update(collect_headers_from_nodes(body))
+            elif kind == 'IF':
+                for _, body_data in n[1]:
+                    for body, deferred in body_data:
+                        hdrs.update(collect_headers_from_nodes(body))
+            elif kind in ('WHILE', 'REPEAT'):
+                _, body, deferred = n[1]
+                hdrs.update(collect_headers_from_nodes(body))
+            elif kind == 'FOR_RANGE':
+                _, _, _, _, _, body, deferred = n[1]
+                hdrs.update(collect_headers_from_nodes(body))
+            elif kind == 'FOR_EACH':
+                _, _, _, body, deferred = n[1]
+                hdrs.update(collect_headers_from_nodes(body))
+        return hdrs
 
-    cpp_lines = []
-    if headers:
-        cpp_lines.extend([f'#include {h}' for h in sorted(headers)])
-    cpp_lines.extend(pre_main_lines)
+    headers = collect_headers_from_nodes(top_nodes + functions)
 
-    # Forward declarations for user functions
-    if functions:
-        cpp_lines.append('')
-        for handler, node in functions:
-            if not isinstance(handler, StatementHandler):
-                continue
-            if hasattr(handler, 'forward_declaration'):
-                fwd = handler.forward_declaration(node)
-                if fwd:
-                    cpp_lines.append(fwd)
+    # Pre‑main content (smart wrappers, extern "C" blocks)
+    pre_main = []
+    for h, n in top_nodes + functions:
+        if hasattr(h, 'generate_pre_main'):
+            pre_main.append(h.generate_pre_main(n))
 
-    # Function definitions
-    for handler, node in functions:
-        if not isinstance(handler, StatementHandler):
-            continue
-        if hasattr(handler, 'generate_function'):
-            cpp_lines.append(handler.generate_function(node))
+    output = []
+    for hdr in sorted(headers):
+        output.append(f'#include {hdr}')
+    output.extend(pre_main)
 
-    # Determine if user defined a 'main' function
-    user_main_node = None
-    for handler, node in functions:
-        if node[0] == 'FUNC' and node[1][0] == 'main':
-            user_main_node = node
-            break
+    # Function definitions before main()
+    for h, n in functions:
+        if hasattr(h, 'generate_function'):
+            output.append(h.generate_function(n))
 
-    # Generate real C++ int main()
-    if user_main_node or top_level_nodes:
-        cpp_lines.append('')
-        cpp_lines.append('int main() {')
-        body_indent = '    '
+    # main() wrapper
+    if top_nodes or any(n[0] == 'FUNC' and n[1][0] == 'main' for _, n in functions):
+        if any(n[0] == 'FUNC' and n[1][0] == 'main' for _, n in functions):
+            output.append('')
+            output.append('int main() { return user_main(); }')
+        else:
+            output.append('')
+            output.append('int main() {')
+            indent = '    '
+            deferred_main = []
+            for h, n in top_nodes:
+                if n[0] == 'DEFER':
+                    deferred_main.append(n)
+                else:
+                    output.append(h.generate(n, indent))
+            output.extend(generate_deferred_lines(deferred_main, indent))
+            output.append('    return 0;')
+            output.append('}')
 
-        deferred_main = []
-        for handler, node in top_level_nodes:
-            if node[0] == 'DEFER':
-                deferred_main.append(node)
-            else:
-                gen = handler.generate(node, body_indent)
-                if gen.strip():   # skip empty lines (e.g., from import)
-                    cpp_lines.append(gen)
-
-        if user_main_node:
-            return_type = user_main_node[1][3]
-            if return_type == 'int':
-                cpp_lines.append(f'{body_indent}return user_main();')
-            else:
-                cpp_lines.append(f'{body_indent}user_main();')
-                cpp_lines.append(f'{body_indent}return 0;')
-
-        cpp_lines.extend(generate_deferred_lines(deferred_main, body_indent))
-        cpp_lines.append('}')
-
-    final_code = '\n'.join(cpp_lines) + '\n'
-
-    with open(output_file, 'w') as f:
-        f.write(final_code)
-
-    print(f"✓ Transpiled '{input_file}' → '{output_file}'")
+    with open(sys.argv[2], 'w') as f:
+        f.write('\n'.join(output) + '\n')
+    print(f"✓ Transpiled '{sys.argv[1]}' → '{sys.argv[2]}'")
 
 if __name__ == '__main__':
     main()
