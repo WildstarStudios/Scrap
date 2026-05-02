@@ -6,12 +6,14 @@ from scrap.core.handler_base import (
 )
 from scrap.handlers.interop.import_lib import ImportLibHandler
 from scrap.handlers.declarations.var import VarHandler
+from scrap.handlers.declarations.set import SetHandler          # <-- added
 from scrap.handlers.functions.func import FuncHandler
 from scrap.handlers.control.if_handler import IfHandler
 from scrap.handlers.control.while_handler import WhileHandler
 from scrap.handlers.control.break_handler import BreakHandler
 from scrap.handlers.control.return_handler import ReturnHandler
 from scrap.handlers.io.log import LogHandler
+from scrap.handlers.io.ask import AskHandler
 from scrap.handlers.memory.defer import DeferHandler
 from scrap.handlers.calls.function_call import FunctionCallHandler
 from scrap.core.debug import DEBUG
@@ -20,11 +22,13 @@ HANDLERS = [
     ImportLibHandler(),
     FuncHandler(),
     VarHandler(),
+    SetHandler(),           # <-- added (must come after VarHandler because it doesn't start with "var")
     IfHandler(),
     WhileHandler(),
     BreakHandler(),
     ReturnHandler(),
     LogHandler(),
+    AskHandler(),
     DeferHandler(),
     FunctionCallHandler(),
 ]
@@ -57,14 +61,12 @@ def collect_headers_from_nodes(nodes):
     """Recursively collect required headers from a list of (handler, node) tuples."""
     headers = set()
     for h, node in nodes:
-        # handler's own headers
         if hasattr(h, 'required_headers'):
             rh = h.required_headers
             if callable(rh):
                 rh = rh(node)
             headers.update(rh)
 
-        # recurse into function bodies, if blocks, etc.
         kind = node[0]
         if kind == 'FUNC':
             _, _, _, body, deferred = node[1]
@@ -121,11 +123,10 @@ def main():
         if not handled:
             raise SyntaxError(f"Unknown statement at line {i+1}: {stripped}")
 
-    # Collect all required headers (recursively)
+    # Collect required headers (recursively)
     all_headers = set()
     all_headers.update(collect_headers_from_nodes(top_nodes))
     all_headers.update(collect_headers_from_nodes(functions))
-    # Also include headers from import lib handlers at top level
     for h, n in top_nodes + functions:
         if hasattr(h, 'required_headers'):
             rh = h.required_headers

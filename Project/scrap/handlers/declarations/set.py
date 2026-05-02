@@ -3,7 +3,7 @@ from scrap.core.handler_base import StatementHandler, strip_comments
 from scrap.core.utils import resolve_dotted_calls
 
 class SetHandler(StatementHandler):
-    keywords = []  # we detect via '='
+    keywords = []  # detects by '='
 
     def can_handle(self, line):
         stripped = line.strip()
@@ -39,13 +39,3 @@ class SetHandler(StatementHandler):
         elif kind == 'SET_EXPR':
             expr = resolve_dotted_calls(node[2])
             return f'{indent}{name} = {expr};'
-
-    def check_semantics(self, node, symbols):
-        name = node[1]
-        # If it's a dotted name (e.g., wc.lpfnWndProc), only check the base variable
-        if '.' in name:
-            base = name.split('.')[0]
-        else:
-            base = name
-        if symbols.lookup(base) is None:
-            raise SyntaxError(f"Variable '{base}' not declared")

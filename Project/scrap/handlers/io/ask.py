@@ -17,7 +17,9 @@ class AskHandler(StatementHandler):
     def generate(self, node, indent=''):
         var, prompt = node[1], node[2]
         escaped = prompt.replace('\\', '\\\\').replace('"', '\\"')
-        return (f'{indent}std::cout << "{escaped}";\n'
+        # Declare the variable as std::string, then output the prompt and read input
+        return (f'{indent}std::string {var};\n'
+                f'{indent}std::cout << "{escaped}";\n'
                 f'{indent}std::getline(std::cin, {var});')
 
     required_headers = {'<iostream>', '<string>'}

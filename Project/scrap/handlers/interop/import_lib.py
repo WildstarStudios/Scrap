@@ -24,12 +24,34 @@ class ImportLibHandler(StatementHandler):
         header = m.group(1)
         alias = m.group(2)
 
-        functions, ownership = parse_cheader_pure(header)
-
+        # ----- Detect C vs C++ header -----
+        is_cpp = header.endswith(('.hpp', '.hxx', '.h++', '.hh', '.HPP', '.H'))
         if alias is None:
             base = os.path.splitext(os.path.basename(header))[0]
             alias = re.sub(r'[^a-zA-Z0-9_]', '_', base)
             alias = re.sub(r'^\d+', '', alias) or 'clib'
+
+        if is_cpp:
+            # C++ header → just register as a namespace alias
+            if DEBUG:
+                print(f"[DEBUG import_lib] C++ header detected: '{header}' -> alias '{alias}' (namespace mode)")
+            # We'll attempt to guess the namespace from the alias (capitalize first letter)
+            # But user can also specify the namespace explicitly by adding a special syntax,
+            # for simplicity we assume alias IS the namespace name (e.g., "ImGui")
+            cpp_ns = alias  # user can write "import lib "imgui.h" as ImGui" → namespace ImGui
+            # Wildcard function map: any method name maps to (cpp_ns::method, False)
+            func_map = {}
+            # We don't have a prefix, so all suffixed calls just use the exact method name
+            # We'll set up a special key '*' to indicate wildcard
+            register_library_alias(alias, '', {})   # empty map, but the alias is registered
+            # We'll store the namespace for direct use
+            self._parsed_data[header] = (alias, {}, [], '')
+            if DEBUG:
+                print(f"[DEBUG import_lib] registered C++ alias '{alias}' as namespace '{cpp_ns}'")
+            return ('IMPORT_CPP', alias, cpp_ns, header), start_index + 1
+
+        # ----- Original C library handling (unchanged) -----
+        functions, ownership = parse_cheader_pure(header)
 
         # ---------- robust prefix detection ----------
         names = [f['name'] for f in functions]
@@ -74,8 +96,6 @@ class ImportLibHandler(StatementHandler):
             func_map[suffix] = (full, takes_handle)
 
         # ---------- ownership → smart‑pointer registration ----------
-        # We only need outparam creators (e.g., sqlite3_open) for automatic unique_ptr wrapping.
-        # Normal owned creators (pointer‑return) are not used automatically, so we skip wrapper generation.
         for creator, info in ownership.items():
             if isinstance(info, tuple):
                 destroyer, base_type, *rest = info
@@ -86,8 +106,11 @@ class ImportLibHandler(StatementHandler):
                     if suffix:
                         func_map[suffix] = (creator, False)
             else:
-                # plain string destroyer -> normal owned creator, ignored for now
-                pass
+                destroyer = info
+                creator_func = next((f for f in functions if f['name'] == creator), None)
+                if creator_func and creator_func['is_pointer_return']:
+                    wrapper = f'Unique{alias}{creator}'
+                    register_owned_creator(creator, wrapper)
 
         register_library_alias(alias, prefix, func_map)
         self._parsed_data[header] = (alias, ownership, functions, prefix)
@@ -102,16 +125,27 @@ class ImportLibHandler(StatementHandler):
         return ''
 
     def required_headers(self, node=None):
+        if node is None:
+            return set()
+        # For C++ headers, we just need to include the header (no extern "C")
+        if len(node) == 4 and node[0] == 'IMPORT_CPP':
+            return {f'"{node[3]}"'}
+        # For C headers, include is placed inside extern "C" via generate_pre_main
         return set()
 
     def generate_pre_main(self, node):
+        if len(node) == 4 and node[0] == 'IMPORT_CPP':
+            # C++ header – just include directly
+            alias, cpp_ns, header = node[1], node[2], node[3]
+            return f'#include "{header}"'
+        # Original C logic (unchanged)
         alias, header = node[1], node[2]
         if header not in self._parsed_data:
             return ''
-        # We only need the extern "C" include; the unique_ptr is instantiated directly by var.py
+        _, ownership, functions, prefix = self._parsed_data[header]
         lines = []
         lines.append('extern "C" {')
         lines.append(f'#include "{header}"')
         lines.append('}')
-        lines.append('#include <memory>')   # needed for std::unique_ptr
+        lines.append('#include <memory>')
         return '\n'.join(lines)

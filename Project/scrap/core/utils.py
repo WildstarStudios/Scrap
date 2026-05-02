@@ -98,12 +98,10 @@ def auto_fill_arguments(func_name, given_args):
 def auto_fill_resolved_call(resolved: str) -> str:
     """Given a resolved function call string (e.g., 'sqlite3_exec(db.get(), ...)'),
     auto-fill missing pointer arguments and return the corrected string."""
-    # Extract function name
     m = re.match(r'^([a-zA-Z_]\w*)\(', resolved)
     if not m:
         return resolved
     fn = m.group(1)
-    # Find matching closing parenthesis
     start = resolved.index('(')
     i = start + 1
     depth = 1
@@ -126,7 +124,6 @@ def auto_fill_resolved_call(resolved: str) -> str:
                 depth -= 1
         i += 1
     inner = resolved[start+1 : i-1].strip()
-    # Safe split of arguments
     args = []
     current = []
     depth = 0
@@ -160,23 +157,29 @@ def resolve_dotted_calls(text: str) -> str:
         print(f"[DEBUG utils.py] resolve_dotted_calls IN: {text!r}")
 
     def replacer(match):
-        full = match.group(0)
+        full = match.group(0)                # e.g., 'rapidfuzz.fuzz.ratio('
+        dotted_chain = match.group(1)        # 'rapidfuzz.fuzz.ratio'
         paren_idx = full.find('(')
         if paren_idx == -1:
             return full
-        dotted_name = full[:paren_idx]
-        args_start = full[paren_idx:]
-        obj_method = dotted_name.split('.')
-        if len(obj_method) < 2:
-            return full
-
-        alias = obj_method[0]
-        method = '.'.join(obj_method[1:])
+        args_start = full[paren_idx:]        # '(' + rest
+        parts = dotted_chain.split('.')
+        alias = parts[0]
 
         if DEBUG:
-            print(f"[DEBUG utils.py]   Checking alias='{alias}', method='{method}'")
+            print(f"[DEBUG utils.py]   Checking alias='{alias}', chain='{dotted_chain}'")
 
         if is_library_alias(alias):
+            lib = _LIBRARY_ALIASES[alias]
+            # C++ namespace alias? (empty prefix, empty func_map)
+            if lib['prefix'] == '' and not lib['functions']:
+                cpp_name = '::'.join(parts)
+                if DEBUG:
+                    print(f"[DEBUG utils.py]   -> C++ qualified: {cpp_name}")
+                return cpp_name + args_start
+
+            # C library alias: we need the method suffix (everything after the alias)
+            method = '.'.join(parts[1:])
             info = get_library_function(alias, method)
             if info:
                 full_name, takes_handle = info
@@ -190,8 +193,10 @@ def resolve_dotted_calls(text: str) -> str:
             if DEBUG:
                 print(f"[DEBUG utils.py]   alias '{alias}' not in _LIBRARY_ALIASES (keys: {list(_LIBRARY_ALIASES.keys())})")
 
+        # Variable method call?
         if alias in _VARIABLE_LIB_MAP:
             lib_alias = _VARIABLE_LIB_MAP[alias]
+            method = '.'.join(parts[1:])
             info = get_library_function(lib_alias, method)
             if info:
                 full_name, takes_handle = info
@@ -201,7 +206,8 @@ def resolve_dotted_calls(text: str) -> str:
 
         return full
 
-    result = re.sub(r'\b([a-zA-Z_]\w*\.[a-zA-Z_]\w*)\s*\(', replacer, text)
+    # Match one or more dot-separated identifiers before '('
+    result = re.sub(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)\s*\(', replacer, text)
     if DEBUG:
         print(f"[DEBUG utils.py] resolve_dotted_calls OUT: {result!r}")
     return result
@@ -220,22 +226,21 @@ def resolve_dotted_call_with_handle(text: str) -> str:
     n = len(text)
 
     while i < n:
-        # Look for a dotted call pattern: word.word(
-        m = re.compile(r'\b([a-zA-Z_]\w*\.[a-zA-Z_]\w*)\s*\(').search(text, i)
+        # Match a chain of identifiers separated by dots, ending with '('
+        m = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)\s*\(').search(text, i)
         if not m:
             result.append(text[i:])
             break
 
-        # Append everything before the match
         result.append(text[i:m.start()])
 
-        dotted_part = m.group(1)          # e.g., 'db.exec'
-        paren_pos = m.end() - 1           # position of '('
-        obj_method = dotted_part.split('.')
-        var_name = obj_method[0]
-        method = '.'.join(obj_method[1:])
+        dotted_chain = m.group(1)          # e.g., 'rapidfuzz.fuzz.ratio' or 'db.exec'
+        paren_pos = m.end() - 1            # position of '('
+        parts = dotted_chain.split('.')
+        var_name = parts[0]
+        # method is everything after the first dot (could be 'fuzz.ratio' or just 'exec')
+        method = '.'.join(parts[1:])
 
-        # Find the matching closing parenthesis
         j = paren_pos + 1
         depth = 1
         in_str = False
@@ -257,12 +262,10 @@ def resolve_dotted_call_with_handle(text: str) -> str:
                     depth -= 1
             j += 1
         if depth != 0:
-            # Unbalanced – keep the original text as-is
             result.append(text[m.start():j])
             i = j
             continue
 
-        # j now points after the closing ')'
         closing_paren = j - 1
         inner = text[paren_pos+1 : closing_paren].strip()
 
@@ -280,19 +283,24 @@ def resolve_dotted_call_with_handle(text: str) -> str:
                     new_inner = inner
                 resolved = f'{full_name}({new_inner})'
 
-        # Static alias call?
+        # Static alias call? (C or C++ namespace)
         if resolved is None and is_library_alias(var_name):
-            info = get_library_function(var_name, method)
-            if info:
-                full_name, _ = info
-                resolved = f'{full_name}({inner})'
+            lib = _LIBRARY_ALIASES.get(var_name)
+            if lib and lib['prefix'] == '' and not lib['functions']:
+                # C++ namespace: replace all dots with ::
+                cpp_name = '::'.join(parts)
+                resolved = f'{cpp_name}({inner})'
+            else:
+                info = get_library_function(var_name, method)
+                if info:
+                    full_name, _ = info
+                    resolved = f'{full_name}({inner})'
 
         if resolved is not None:
             result.append(resolved)
         else:
-            # Keep the original call unchanged
             result.append(text[m.start():j])
 
-        i = j   # continue after the full call
+        i = j
 
     return ''.join(result)
