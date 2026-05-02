@@ -150,7 +150,18 @@ def auto_fill_resolved_call(resolved: str) -> str:
     return f'{fn}({", ".join(filled)})'
 
 # ----------------------------------------------------------------------
-#  Basic dotted call resolution (only renames functions)
+#  Variable type registry (for smart printf formatting)
+# ----------------------------------------------------------------------
+_VAR_TYPES = {}
+
+def register_variable_type(name, cpp_type):
+    _VAR_TYPES[name] = cpp_type
+
+def get_variable_type(name):
+    return _VAR_TYPES.get(name)
+
+# ----------------------------------------------------------------------
+#  Basic dotted call resolution – handles multi‑dot chains
 # ----------------------------------------------------------------------
 def resolve_dotted_calls(text: str) -> str:
     if DEBUG:
@@ -178,7 +189,7 @@ def resolve_dotted_calls(text: str) -> str:
                     print(f"[DEBUG utils.py]   -> C++ qualified: {cpp_name}")
                 return cpp_name + args_start
 
-            # C library alias: we need the method suffix (everything after the alias)
+            # C library alias: method is everything after the first dot
             method = '.'.join(parts[1:])
             info = get_library_function(alias, method)
             if info:
@@ -206,7 +217,7 @@ def resolve_dotted_calls(text: str) -> str:
 
         return full
 
-    # Match one or more dot-separated identifiers before '('
+    # Match one or more dot‑separated identifiers before '('
     result = re.sub(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)\s*\(', replacer, text)
     if DEBUG:
         print(f"[DEBUG utils.py] resolve_dotted_calls OUT: {result!r}")
@@ -238,7 +249,6 @@ def resolve_dotted_call_with_handle(text: str) -> str:
         paren_pos = m.end() - 1            # position of '('
         parts = dotted_chain.split('.')
         var_name = parts[0]
-        # method is everything after the first dot (could be 'fuzz.ratio' or just 'exec')
         method = '.'.join(parts[1:])
 
         j = paren_pos + 1

@@ -10,6 +10,6 @@ class PauseHandler(StatementHandler):
         return ('PAUSE', None), start_index + 1
 
     def generate(self, node, indent=''):
-        return indent + 'std::cin.get();'
+        return f'{indent}getchar();'
 
-    required_headers = {'<iostream>'}
+    required_headers = {'<cstdio>'}

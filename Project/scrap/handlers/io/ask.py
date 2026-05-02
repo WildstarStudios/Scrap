@@ -1,5 +1,6 @@
 import re
 from scrap.core.handler_base import StatementHandler, strip_comments
+from scrap.core.utils import register_variable_type
 
 class AskHandler(StatementHandler):
     keywords = ['ask ']
@@ -17,9 +18,16 @@ class AskHandler(StatementHandler):
     def generate(self, node, indent=''):
         var, prompt = node[1], node[2]
         escaped = prompt.replace('\\', '\\\\').replace('"', '\\"')
-        # Declare the variable as std::string, then output the prompt and read input
-        return (f'{indent}std::string {var};\n'
-                f'{indent}std::cout << "{escaped}";\n'
-                f'{indent}std::getline(std::cin, {var});')
+        # Register the variable as std::string
+        register_variable_type(var, 'std::string')
+        return (
+            f'{indent}std::string {var};\n'
+            f'{indent}printf("{escaped}");\n'
+            f'{indent}char __buf[1024];\n'
+            f'{indent}if (fgets(__buf, sizeof(__buf), stdin)) {{\n'
+            f'{indent}    {var} = __buf;\n'
+            f'{indent}    if (!{var}.empty() && {var}.back() == \'\\n\') {var}.pop_back();\n'
+            f'{indent}}}'
+        )
 
-    required_headers = {'<iostream>', '<string>'}
+    required_headers = {'<cstdio>', '<string>'}
