@@ -3,7 +3,7 @@ from scrap.core.handler_base import StatementHandler, strip_comments
 from scrap.core.utils import (
     infer_type_from_value, to_cpp_type, resolve_dotted_calls,
     get_owned_wrapper, get_outparam_creator_info, register_variable_library,
-    register_variable_type
+    register_variable_type, is_dynamic_string
 )
 
 class VarHandler(StatementHandler):
@@ -24,7 +24,7 @@ class VarHandler(StatementHandler):
         name, explicit_type, value = m.groups()
         if value is not None:
             value = value.strip()
-            value = resolve_dotted_calls(value)   # resolve static aliases (e.g., sql.open → sqlite3_open)
+            value = resolve_dotted_calls(value)
         return ('VAR', name, explicit_type, value), start_index + 1
 
     def generate(self, node, indent=''):
@@ -34,11 +34,13 @@ class VarHandler(StatementHandler):
                 raise SyntaxError("var without type requires an initialiser")
             cpp_type = to_cpp_type(explicit_type)
             register_variable_type(name, cpp_type)
+            if cpp_type == 'string':
+                return f'{indent}string {name}; string_init(&{name});'
             if cpp_type in ('int', 'double', 'bool', 'auto', 'char') or cpp_type.endswith('*') or cpp_type.endswith('&'):
                 return f'{indent}{cpp_type} {name};'
             return f'{indent}{cpp_type} {name}{{}};'
 
-        value = resolve_dotted_calls(value)   # ensure fully resolved
+        value = resolve_dotted_calls(value)
 
         # Determine type
         if explicit_type:
@@ -60,6 +62,20 @@ class VarHandler(StatementHandler):
             else:
                 cpp_type = infer_type_from_value(value)
 
+        # If initializer is a string literal
+        if value.startswith('"') and value.endswith('"'):
+            literal = value[1:-1]
+            escaped = literal.replace('\\', '\\\\').replace('"', '\\"')
+            if cpp_type == 'string':   # dynamic
+                register_variable_type(name, 'string')
+                return f'{indent}string {name}; string_init(&{name}); string_set(&{name}, "{escaped}");'
+            else:   # static
+                size = len(literal) + 1
+                cpp_type = f'char[{size}]'
+                register_variable_type(name, cpp_type, size)
+                return f'{indent}{cpp_type} {name} = "{escaped}";'
+
+        # Not a string literal
         register_variable_type(name, cpp_type)
 
         m_call = re.match(r'^([a-zA-Z_][\w:]*)\((.*)\)$', value)
@@ -86,7 +102,5 @@ class VarHandler(StatementHandler):
 
             return f'{indent}{cpp_type} {name} = {func_name}({args_str});'
 
-        if value.startswith('"') and value.endswith('"'):
-            escaped = value[1:-1].replace('\\', '\\\\').replace('"', '\\"')
-            return f'{indent}{cpp_type} {name} = "{escaped}";'
+        # Plain non‑string value
         return f'{indent}{cpp_type} {name} = {value};'

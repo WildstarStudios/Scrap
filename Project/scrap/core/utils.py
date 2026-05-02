@@ -3,7 +3,7 @@ import re
 from scrap.core.debug import DEBUG
 
 _type_map = {
-    'int': 'int', 'float': 'double', 'string': 'std::string',
+    'int': 'int', 'float': 'double', 'string': 'string',   # our custom type
     'bool': 'bool', 'void': 'void', 'auto': 'auto',
 }
 
@@ -14,7 +14,7 @@ def to_cpp_type(t: str) -> str:
 
 def infer_type_from_value(value: str) -> str:
     if value.startswith('"') and value.endswith('"'):
-        return 'std::string'
+        return 'string'
     if re.match(r'^-?\d+$', value):
         return 'int'
     if re.match(r'^-?\d+\.\d+$', value):
@@ -150,15 +150,157 @@ def auto_fill_resolved_call(resolved: str) -> str:
     return f'{fn}({", ".join(filled)})'
 
 # ----------------------------------------------------------------------
-#  Variable type registry (for smart printf formatting)
+#  Variable type registry (type + optional static buffer size)
 # ----------------------------------------------------------------------
 _VAR_TYPES = {}
+_USES_DYNAMIC_STRING = False
 
-def register_variable_type(name, cpp_type):
-    _VAR_TYPES[name] = cpp_type
+def register_variable_type(name, cpp_type, size=None):
+    global _USES_DYNAMIC_STRING
+    if cpp_type == 'string':
+        _USES_DYNAMIC_STRING = True
+    _VAR_TYPES[name] = (cpp_type, size)
 
 def get_variable_type(name):
-    return _VAR_TYPES.get(name)
+    entry = _VAR_TYPES.get(name)
+    return entry[0] if entry else None
+
+def get_variable_size(name):
+    entry = _VAR_TYPES.get(name)
+    return entry[1] if entry else None
+
+def is_dynamic_string(name):
+    entry = _VAR_TYPES.get(name)
+    return entry is not None and entry[0] == 'string'
+
+def is_static_string(name):
+    entry = _VAR_TYPES.get(name)
+    if not entry:
+        return False
+    t = entry[0]
+    return t.startswith('char[')
+
+def uses_dynamic_string():
+    return _USES_DYNAMIC_STRING
+
+def mark_uses_dynamic_string():          # <-- added
+    global _USES_DYNAMIC_STRING
+    _USES_DYNAMIC_STRING = True
+
+# ----------------------------------------------------------------------
+#  SSO tiny string runtime – generated automatically when needed
+# ----------------------------------------------------------------------
+SSO_RUNTIME = '''
+// ---- tiny string (built-in) ----
+typedef struct {
+    char* data;
+    int length;
+    int capacity;
+    char small[24];
+} string;
+
+static void string_init(string* s) {
+    s->data = s->small;
+    s->small[0] = '\\0';
+    s->length = 0;
+    s->capacity = 24;
+}
+
+// Ensure capacity to AT LEAST 'needed' bytes (exact allocation)
+static void string_ensure_capacity(string* s, int needed) {
+    if (needed <= s->capacity) return;
+    // Allocate exactly 'needed' bytes (no extra slack)
+    if (s->data == s->small) {
+        char* newdata = (char*)malloc(needed);
+        memcpy(newdata, s->small, s->length + 1);
+        s->data = newdata;
+    } else {
+        s->data = (char*)realloc(s->data, needed);
+    }
+    s->capacity = needed;
+}
+
+// Optional: shrink buffer to exactly match length+1
+static void string_shrink_to_fit(string* s) {
+    int needed = s->length + 1;
+    if (needed <= 24) {
+        if (s->data != s->small) {
+            memcpy(s->small, s->data, needed);
+            free(s->data);
+            s->data = s->small;
+            s->capacity = 24;
+        }
+    } else if (needed < s->capacity) {
+        s->data = (char*)realloc(s->data, needed);
+        s->capacity = needed;
+    }
+}
+
+static void string_set(string* s, const char* str) {
+    int len = (int)strlen(str);
+    string_ensure_capacity(s, len + 1);
+    memcpy(s->data, str, len + 1);
+    s->length = len;
+}
+
+static void string_readline(string* s, FILE* fp) {
+    string_init(s);
+    int c;
+    int pos = 0;
+    while ((c = fgetc(fp)) != EOF && c != '\\n') {
+        if (pos + 1 >= s->capacity) {
+            // grow exactly to pos+2 (current length+1 for next char)
+            string_ensure_capacity(s, pos + 2);
+        }
+        s->data[pos++] = c;
+    }
+    if (pos == 0 && c == EOF) {
+        s->length = 0;
+        s->data[0] = '\\0';
+    } else {
+        s->data[pos] = '\\0';
+        s->length = pos;
+    }
+    // Shrink to exact size (optional – comment out if speed matters more)
+    string_shrink_to_fit(s);
+}
+
+static void string_free(string* s) {
+    if (s->data != s->small) free(s->data);
+}
+
+static const char* string_c_str(string* s) { return s->data; }
+
+static int string_compare(string* a, const char* b) {
+    return strcmp(a->data, b);
+}
+
+// ---- Make iterable ----
+static inline const char* begin(const string& s) { return s.data; }
+static inline const char* end(const string& s)   { return s.data + s.length; }
+// ------------------------
+// ---- end of tiny string ----
+'''
+
+def resolve_string_comparison(cond: str) -> str:
+    """Replace `var == "literal"` with strcmp or string_compare, depending on type."""
+    m = re.match(r'^([a-zA-Z_]\w*)\s*(==|!=)\s*"(.*)"$', cond)
+    if not m:
+        return cond
+    var = m.group(1)
+    op = m.group(2)
+    literal = m.group(3)
+    escaped = literal.replace('\\', '\\\\').replace('"', '\\"')
+    if is_dynamic_string(var):
+        cmp = f'string_compare(&{var}, "{escaped}")'
+    elif is_static_string(var):
+        cmp = f'strcmp({var}, "{escaped}")'
+    else:
+        return cond
+    if op == '==':
+        return f'({cmp} == 0)'
+    else:
+        return f'({cmp} != 0)'
 
 # ----------------------------------------------------------------------
 #  Basic dotted call resolution – handles multi‑dot chains

@@ -1,9 +1,9 @@
 import re
 from scrap.core.handler_base import StatementHandler, strip_comments
-from scrap.core.utils import resolve_dotted_calls
+from scrap.core.utils import resolve_dotted_calls, get_variable_type, is_static_string, is_dynamic_string, get_variable_size
 
 class SetHandler(StatementHandler):
-    keywords = []  # detects by '='
+    keywords = []
 
     def can_handle(self, line):
         stripped = line.strip()
@@ -35,7 +35,20 @@ class SetHandler(StatementHandler):
         if kind == 'SET_STRING':
             literal = node[2]
             escaped = literal.replace('\\', '\\\\').replace('"', '\\"')
-            return f'{indent}{name} = "{escaped}";'
+            if is_static_string(name):
+                # static char array – use strcpy; if literal too long, it's a C error (safe enough)
+                return f'{indent}strcpy({name}, "{escaped}");'
+            elif is_dynamic_string(name):
+                return f'{indent}string_set(&{name}, "{escaped}");'
+            else:
+                # unknown type, fallback to assignment
+                return f'{indent}{name} = "{escaped}";'
         elif kind == 'SET_EXPR':
             expr = resolve_dotted_calls(node[2])
-            return f'{indent}{name} = {expr};'
+            if is_static_string(name):
+                # assume expr returns const char*
+                return f'{indent}strcpy({name}, {expr});'
+            elif is_dynamic_string(name):
+                return f'{indent}string_set(&{name}, {expr});'
+            else:
+                return f'{indent}{name} = {expr};'

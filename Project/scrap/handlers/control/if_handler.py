@@ -1,6 +1,6 @@
 import re
 from scrap.core.handler_base import StatementHandler, get_indent, strip_comments, parse_block_body, generate_deferred_lines
-from scrap.core.utils import resolve_dotted_call_with_handle, auto_fill_resolved_call
+from scrap.core.utils import resolve_dotted_call_with_handle, auto_fill_resolved_call, resolve_string_comparison
 
 class IfHandler(StatementHandler):
     keywords = ['if ']
@@ -65,10 +65,9 @@ class IfHandler(StatementHandler):
             else:
                 kw = 'else if'
             if cond:
-                # Resolve dotted calls and auto‑fill missing arguments
                 cond = resolve_dotted_call_with_handle(cond)
-                # If the condition itself is a function call, auto‑fill it
                 cond = auto_fill_resolved_call(cond)
+                cond = resolve_string_comparison(cond)          # string fix
                 cond = cond.replace('not ', '!').replace(' and ', ' && ').replace(' or ', ' || ')
                 code.append(f'{indent}{kw} ({cond}) {{')
             else:

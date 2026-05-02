@@ -1,7 +1,7 @@
 from scrap.core.handler_base import StatementHandler, strip_comments
 from scrap.core.utils import (
     resolve_dotted_call_with_handle, auto_fill_resolved_call,
-    get_variable_type
+    get_variable_type, is_dynamic_string, is_static_string
 )
 import re
 
@@ -29,32 +29,34 @@ class LogHandler(StatementHandler):
             if '(' in resolved:
                 resolved = auto_fill_resolved_call(resolved)
 
-            # If the argument is a simple variable name, use its registered type
+            # Simple variable name?
             if re.match(r'^[a-zA-Z_]\w*$', resolved):
-                vtype = get_variable_type(resolved)
-                if vtype == 'std::string':
+                if is_dynamic_string(resolved):
                     format_parts.append('%s')
-                    arg_vals.append(f'{resolved}.c_str()')
-                elif vtype == 'int':
-                    format_parts.append('%d')
-                    arg_vals.append(resolved)
-                elif vtype == 'double' or vtype == 'float':
-                    format_parts.append('%f')
-                    arg_vals.append(resolved)
+                    arg_vals.append(f'string_c_str(&{resolved})')
+                elif is_static_string(resolved):
+                    format_parts.append('%s')
+                    arg_vals.append(resolved)   # char array decays to pointer
                 else:
-                    # unknown, assume const char* (or string literal) – safe for most
-                    format_parts.append('%s')
-                    arg_vals.append(resolved)
+                    vtype = get_variable_type(resolved)
+                    if vtype == 'int':
+                        format_parts.append('%d')
+                        arg_vals.append(resolved)
+                    elif vtype == 'double' or vtype == 'float':
+                        format_parts.append('%f')
+                        arg_vals.append(resolved)
+                    else:
+                        format_parts.append('%s')
+                        arg_vals.append(resolved)
             elif resolved.startswith('"') and resolved.endswith('"'):
-                # string literal
                 format_parts.append('%s')
                 arg_vals.append(resolved)
             else:
-                # expression (e.g., function call) – assume returns const char* or compatible
+                # expression – assume const char*
                 format_parts.append('%s')
                 arg_vals.append(resolved)
 
         fmt_str = '"' + ' '.join(format_parts) + '\\n"'
         return f'{indent}printf({fmt_str}, {", ".join(arg_vals)});'
 
-    required_headers = {'<cstdio>', '<string>'}
+    required_headers = {'<cstdio>', '<cstring>', '<cstdlib>'}

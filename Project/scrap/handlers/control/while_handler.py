@@ -1,6 +1,6 @@
 import re
 from scrap.core.handler_base import StatementHandler, get_indent, strip_comments, parse_block_body, generate_deferred_lines
-from scrap.core.utils import resolve_dotted_call_with_handle
+from scrap.core.utils import resolve_dotted_call_with_handle, resolve_string_comparison
 
 class WhileHandler(StatementHandler):
     keywords = ['while ']
@@ -23,6 +23,7 @@ class WhileHandler(StatementHandler):
     def generate(self, node, indent=''):
         cond, body, deferred = node[1]
         cond = resolve_dotted_call_with_handle(cond)
+        cond = resolve_string_comparison(cond)
         lines = [f'{indent}while ({cond}) {{']
         inner = indent + '    '
         for h, n in body:

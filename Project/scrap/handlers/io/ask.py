@@ -18,16 +18,12 @@ class AskHandler(StatementHandler):
     def generate(self, node, indent=''):
         var, prompt = node[1], node[2]
         escaped = prompt.replace('\\', '\\\\').replace('"', '\\"')
-        # Register the variable as std::string
-        register_variable_type(var, 'std::string')
+        # Dynamic string – use our custom SSO type
+        register_variable_type(var, 'string')
         return (
-            f'{indent}std::string {var};\n'
+            f'{indent}string {var};\n'
             f'{indent}printf("{escaped}");\n'
-            f'{indent}char __buf[1024];\n'
-            f'{indent}if (fgets(__buf, sizeof(__buf), stdin)) {{\n'
-            f'{indent}    {var} = __buf;\n'
-            f'{indent}    if (!{var}.empty() && {var}.back() == \'\\n\') {var}.pop_back();\n'
-            f'{indent}}}'
+            f'{indent}string_readline(&{var}, stdin);'
         )
 
-    required_headers = {'<cstdio>', '<string>'}
+    required_headers = {'<cstdio>', '<cstring>', '<cstdlib>'}

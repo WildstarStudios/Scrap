@@ -6,7 +6,7 @@ from scrap.core.handler_base import (
 )
 from scrap.handlers.interop.import_lib import ImportLibHandler
 from scrap.handlers.declarations.var import VarHandler
-from scrap.handlers.declarations.set import SetHandler          # <-- added
+from scrap.handlers.declarations.set import SetHandler
 from scrap.handlers.functions.func import FuncHandler
 from scrap.handlers.control.if_handler import IfHandler
 from scrap.handlers.control.while_handler import WhileHandler
@@ -17,12 +17,13 @@ from scrap.handlers.io.ask import AskHandler
 from scrap.handlers.memory.defer import DeferHandler
 from scrap.handlers.calls.function_call import FunctionCallHandler
 from scrap.core.debug import DEBUG
+from scrap.core.utils import SSO_RUNTIME, mark_uses_dynamic_string
 
 HANDLERS = [
     ImportLibHandler(),
     FuncHandler(),
     VarHandler(),
-    SetHandler(),           # <-- added (must come after VarHandler because it doesn't start with "var")
+    SetHandler(),
     IfHandler(),
     WhileHandler(),
     BreakHandler(),
@@ -86,6 +87,35 @@ def collect_headers_from_nodes(nodes):
             headers.update(collect_headers_from_nodes(body))
     return headers
 
+def _scan_for_dynamic_strings(nodes):
+    """Recursively walk through parsed nodes and mark if any 'ASK' or explicit 'string'
+       variable is present. This must be called BEFORE generation so that the runtime
+       is emitted early enough."""
+    for h, node in nodes:
+        kind = node[0]
+        if kind == 'ASK':
+            mark_uses_dynamic_string()
+        elif kind == 'VAR':
+            _, _, explicit_type, _ = node
+            if explicit_type == 'string':
+                mark_uses_dynamic_string()
+        elif kind == 'FUNC':
+            _, _, _, body, deferred = node[1]
+            _scan_for_dynamic_strings(body)
+        elif kind == 'IF':
+            for _, body_data in node[1]:
+                for body, deferred in body_data:
+                    _scan_for_dynamic_strings(body)
+        elif kind in ('WHILE', 'REPEAT'):
+            _, body, deferred = node[1]
+            _scan_for_dynamic_strings(body)
+        elif kind == 'FOR_RANGE':
+            _, _, _, _, _, body, deferred = node[1]
+            _scan_for_dynamic_strings(body)
+        elif kind == 'FOR_EACH':
+            _, _, _, body, deferred = node[1]
+            _scan_for_dynamic_strings(body)
+
 def main():
     if len(sys.argv) != 3:
         print("Usage: python scrap.py input.scrap output.cpp")
@@ -123,6 +153,10 @@ def main():
         if not handled:
             raise SyntaxError(f"Unknown statement at line {i+1}: {stripped}")
 
+    # ---- Early scan for dynamic strings ----
+    _scan_for_dynamic_strings(top_nodes)
+    _scan_for_dynamic_strings(functions)
+
     # Collect required headers (recursively)
     all_headers = set()
     all_headers.update(collect_headers_from_nodes(top_nodes))
@@ -137,6 +171,12 @@ def main():
     output = []
     for hdr in sorted(all_headers):
         output.append(f'#include {hdr}')
+
+    # Insert SSO string runtime if any dynamic string is used
+    # (we check the global flag set during the early scan)
+    from scrap.core.utils import uses_dynamic_string
+    if uses_dynamic_string():
+        output.append(SSO_RUNTIME.strip())
 
     # Pre‑main content from import libs
     for h, n in top_nodes + functions:
