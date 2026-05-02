@@ -30,7 +30,7 @@ def gather_source_files(lib_root: Path):
     c_files = []
     cpp_files = []
 
-    for ext in ('*.c', '*.cpp', 'cxx', '*.cc'):
+    for ext in ('*.c', '*.cpp', '*.cxx', '*.cc'):
         for f in lib_root.rglob(ext):
             fname_lower = f.name.lower()
             if any(p in fname_lower for p in exclude_patterns):
@@ -257,13 +257,43 @@ def build(scrap_file, output_exe, fresh=False, tiny=False, single=False):
 
     # ---------- Compile & Link ----------
     if single:
-        # --- SINGLE‑COMMAND BUILD with flag retry ---
+        # --- SINGLE‑COMMAND BUILD with separate C/C++ compilation ---
         all_sources = list(all_cpp_sources) + list(all_c_sources) + direct_sources
         if not all_sources:
             print("Error: no source files to compile")
             return 1
 
-        # Define flag combos to try (same as normal mode)
+        # Split into C and C++ sources
+        c_sources = [s for s in all_sources if s.endswith('.c')]
+        cpp_sources = [s for s in all_sources if not s.endswith('.c')]
+
+        build_dir = Path("build_objs")
+        build_dir.mkdir(exist_ok=True)
+
+        obj_files = []
+
+        # Compile C sources with gcc (using optimisation flags)
+        for c_file in c_sources:
+            obj_name = Path(c_file).stem + ".o"
+            obj_path = build_dir / obj_name
+            # Build flags for C
+            c_flags = ['-c', '-DNDEBUG', '-O2', '-ffunction-sections', '-fdata-sections']
+            if tiny:
+                c_flags += ['-flto']
+            cmd = [gcc] + c_flags
+            for d in sorted(include_dirs):
+                cmd.append(f'-I{d}')
+            cmd.append('-I.')
+            cmd.append(c_file)
+            cmd.append('-o')
+            cmd.append(str(obj_path))
+            print(f"  [CC] {c_file} -> {obj_path}")
+            if subprocess.run(cmd).returncode != 0:
+                print(f"Failed to compile {c_file}")
+                return 1
+            obj_files.append(str(obj_path))
+
+        # Compile C++ sources with g++ (with flag retry)
         if tiny:
             flag_combos = [
                 ['-fno-exceptions', '-fno-rtti'],
@@ -276,41 +306,64 @@ def build(scrap_file, output_exe, fresh=False, tiny=False, single=False):
                 ['-fno-exceptions', '-fno-rtti'],
                 []
             ]
-
-        # Build base flags
-        base_flags = ['-static', '-s', '-ffunction-sections', '-fdata-sections']
-        if tiny:
-            base_flags += ['-flto', '-O3']
-        else:
-            base_flags += ['-O2']
-
-        success = False
+        cxx_compiled = False
         for extra_flags in flag_combos:
-            cmd = [gpp] + base_flags + extra_flags
-            for d in sorted(include_dirs):
-                cmd.append(f'-I{d}')
-            cmd.append('-I.')
-            cmd.extend(all_sources)
-            for d in sorted(library_dirs):
-                cmd.append(f'-L{d}')
-            cmd.extend(library_files)
-            cmd.extend(['-Wl,--gc-sections', '-o', output_exe])
-
-            print(f"Trying flags: {extra_flags if extra_flags else 'none'}")
-            print("Command:\n" + ' '.join(cmd))
-            result = subprocess.run(cmd)
-            if result.returncode == 0:
-                success = True
+            ok = True
+            current_objs = []
+            for cpp_file in cpp_sources:
+                obj_name = Path(cpp_file).stem + ".o"
+                obj_path = build_dir / obj_name
+                cxx_flags = ['-c', '-DNDEBUG', '-O2', '-std=c++17', '-ffunction-sections', '-fdata-sections'] + extra_flags
+                if tiny:
+                    cxx_flags += ['-flto']
+                cmd = [gpp] + cxx_flags
+                for d in sorted(include_dirs):
+                    cmd.append(f'-I{d}')
+                cmd.append('-I.')
+                cmd.append(cpp_file)
+                cmd.append('-o')
+                cmd.append(str(obj_path))
+                print(f"  [CXX{extra_flags}] {cpp_file} -> {obj_path}")
+                if subprocess.run(cmd).returncode != 0:
+                    ok = False
+                    break
+                current_objs.append(str(obj_path))
+            if ok:
+                obj_files.extend(current_objs)
+                cxx_compiled = True
                 break
             else:
-                print(f"Failed with flags {extra_flags}, trying next...\n")
+                # clean up any partial objects
+                for obj in current_objs:
+                    try:
+                        os.unlink(obj)
+                    except OSError:
+                        pass
+                continue
+        if not cxx_compiled:
+            print("Error: failed to compile C++ sources with any flag combination")
+            return 1
 
-        if success:
+        # Link all object files together
+        link_flags = [gpp, '-static', '-s', '-ffunction-sections', '-fdata-sections']
+        if tiny:
+            link_flags += ['-flto', '-O3']
+        else:
+            link_flags += ['-O2']
+        for d in sorted(library_dirs):
+            link_flags.append(f'-L{d}')
+        link_flags.extend(obj_files)
+        link_flags.extend(library_files)
+        link_flags.extend(['-Wl,--gc-sections', '-o', output_exe])
+
+        print("Linking:\n" + ' '.join(link_flags))
+        result = subprocess.run(link_flags)
+        if result.returncode != 0:
+            print("Build failed.")
+            return 1
+        else:
             print(f"Successfully built {output_exe}")
             return 0
-        else:
-            print("Build failed with all flag combinations.")
-            return 1
 
     else:
         # NORMAL MODE: compile objects separately, then link

@@ -135,9 +135,8 @@ class ImportLibHandler(StatementHandler):
 
     def generate_pre_main(self, node):
         if len(node) == 4 and node[0] == 'IMPORT_CPP':
-            # C++ header – just include directly
-            alias, cpp_ns, header = node[1], node[2], node[3]
-            return f'#include "{header}"'
+            # C++ header – already included via required_headers, so skip duplicate
+            return ''
         # Original C logic (unchanged)
         alias, header = node[1], node[2]
         if header not in self._parsed_data:

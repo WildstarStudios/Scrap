@@ -9,15 +9,25 @@ from scrap.core.utils import (
 class VarHandler(StatementHandler):
     keywords = ['var ']
     _raw_counter = 0
-    _mutated_vars = set()   # track variable names that are assigned to later
+    _mutated_vars = set()      # variables that are assigned to later
+    _dynamic_strings = set()   # variables declared as dynamic string
 
     @classmethod
     def mark_mutated(cls, name):
         cls._mutated_vars.add(name)
 
     @classmethod
-    def clear_mutated(cls):
+    def register_dynamic_string(cls, name):
+        cls._dynamic_strings.add(name)
+
+    @classmethod
+    def get_dynamic_strings(cls):
+        return cls._dynamic_strings
+
+    @classmethod
+    def clear(cls):
         cls._mutated_vars.clear()
+        cls._dynamic_strings.clear()
 
     def can_handle(self, line):
         return line.strip().startswith('var ')
@@ -44,6 +54,7 @@ class VarHandler(StatementHandler):
             cpp_type = to_cpp_type(explicit_type)
             register_variable_type(name, cpp_type)
             if cpp_type == 'string':
+                self.register_dynamic_string(name)
                 return f'{indent}string {name}; string_init(&{name});'
             if cpp_type in ('int', 'double', 'bool', 'auto', 'char') or cpp_type.endswith('*') or cpp_type.endswith('&'):
                 return f'{indent}{cpp_type} {name};'
@@ -81,6 +92,7 @@ class VarHandler(StatementHandler):
             else:
                 # dynamic string
                 register_variable_type(name, 'string')
+                self.register_dynamic_string(name)
                 return f'{indent}string {name}; string_init(&{name}); string_set(&{name}, "{escaped}");'
 
         # Not a string literal

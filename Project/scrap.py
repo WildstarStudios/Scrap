@@ -14,7 +14,7 @@ from scrap.handlers.control.break_handler import BreakHandler
 from scrap.handlers.control.return_handler import ReturnHandler
 from scrap.handlers.io.log import LogHandler
 from scrap.handlers.io.ask import AskHandler
-from scrap.handlers.memory.defer import DeferHandler
+from scrap.handlers.io.pause import PauseHandler
 from scrap.handlers.calls.function_call import FunctionCallHandler
 from scrap.core.debug import DEBUG
 from scrap.core.utils import SSO_RUNTIME, mark_uses_dynamic_string
@@ -31,7 +31,7 @@ HANDLERS = [
     ReturnHandler(),
     LogHandler(),
     AskHandler(),
-    DeferHandler(),
+    PauseHandler(),
     FunctionCallHandler(),
 ]
 
@@ -259,7 +259,6 @@ def main():
                         output.append(f'{indent}const char* {response_var} = ({best_var} < {threshold}) ? "{fallback}" : responses[best_idx];')
                     else:
                         output.append(f'{indent}const char* {response_var} = responses[best_idx];')
-                    # The log statement for response will be generated separately, so we skip it here.
                 else:
                     output.append(h.generate(n, indent))
         output.extend(generate_deferred_lines(deferred_main, indent))

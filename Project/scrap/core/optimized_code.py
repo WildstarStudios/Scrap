@@ -1,7 +1,7 @@
 """Helper to generate C++ code for OPTIMIZED_RATIO nodes."""
 
 def generate_optimized_ratio_block(data, indent):
-    """Generate C++ code for a loop-based pattern matcher."""
+    """Generate C++ code for a loop-based pattern matcher (returns list of lines)."""
     lines = []
     func = data['func']
     var = data['var']
@@ -13,11 +13,11 @@ def generate_optimized_ratio_block(data, indent):
     threshold = data['threshold']
 
     lines.append(f'{indent}// Optimized ratio block')
-    lines.append(f'{indent}const char* patterns[] = {{')
+    lines.append(f'{indent}static const char* patterns[] = {{')
     for p in patterns:
         lines.append(f'{indent}    "{p}",')
     lines.append(f'{indent}}};')
-    lines.append(f'{indent}const char* responses[] = {{')
+    lines.append(f'{indent}static const char* responses[] = {{')
     for r in responses:
         lines.append(f'{indent}    "{r}",')
     lines.append(f'{indent}}};')

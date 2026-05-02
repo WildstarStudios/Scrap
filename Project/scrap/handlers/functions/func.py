@@ -2,6 +2,7 @@ import re
 from scrap.core.handler_base import StatementHandler, get_indent, strip_comments, parse_block_body, generate_deferred_lines, get_handlers
 from scrap.core.utils import to_cpp_type
 from scrap.core.optimized_code import generate_optimized_ratio_block
+from scrap.handlers.declarations.var import VarHandler
 
 class FuncHandler(StatementHandler):
     keywords = ['func ']
@@ -34,6 +35,8 @@ class FuncHandler(StatementHandler):
         return ('FUNC', (name, params, ret_type, body, deferred)), next_i
 
     def generate_function(self, node):
+        # Clear dynamic string tracking before processing this function
+        VarHandler.clear()
         name, params, ret_type, body, deferred = node[1]
         if name == 'main':
             cpp_name = 'user_main'
@@ -42,12 +45,19 @@ class FuncHandler(StatementHandler):
         cpp_params = ', '.join(f'{to_cpp_type(pt)} {pn}' for pn, pt in params)
         lines = [f'{to_cpp_type(ret_type)} {cpp_name}({cpp_params}) {{']
         inner = '    '
+        statements = []
         for h, n in body:
             if h is None and n[0] == 'OPTIMIZED_RATIO':
-                lines.extend(generate_optimized_ratio_block(n[1], inner))
+                statements.append(generate_optimized_ratio_block(n[1], inner))
             else:
-                lines.append(h.generate(n, inner))
-        lines.extend(generate_deferred_lines(deferred, inner))
+                statements.append(h.generate(n, inner))
+        statements.extend(generate_deferred_lines(deferred, inner))
+
+        # Automatically free all dynamic strings used in this function
+        for dyn_var in VarHandler.get_dynamic_strings():
+            statements.append(f'{inner}string_free(&{dyn_var});')
+
+        lines.extend(statements)
         lines.append('}')
         return '\n'.join(lines)
 
