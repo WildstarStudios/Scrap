@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Scrap Build System – automatic transpilation + compilation.
-Usage: python STS_Compiler.py [--fresh] [--small|--tiny] input.scrap output.exe
+Usage: python STS_Compiler.py [--fresh] [--tiny] [--single] input.scrap output.exe
 """
 import os, sys, shutil, subprocess, re
 from pathlib import Path
@@ -30,7 +30,7 @@ def gather_source_files(lib_root: Path):
     c_files = []
     cpp_files = []
 
-    for ext in ('*.c', '*.cpp', '*.cxx', '*.cc'):
+    for ext in ('*.c', '*.cpp', 'cxx', '*.cc'):
         for f in lib_root.rglob(ext):
             fname_lower = f.name.lower()
             if any(p in fname_lower for p in exclude_patterns):
@@ -57,6 +57,7 @@ def gather_library_files(lib_root: Path):
 
 # -------------------------------------------------------------------
 # 5. compile a library from its source files (with flag retry)
+#    Only used when --single is NOT specified.
 # -------------------------------------------------------------------
 def compile_library_from_source(lib_root: Path, include_dirs, force=False, tiny=False):
     c_files, cpp_files = gather_source_files(lib_root)
@@ -154,7 +155,7 @@ def compile_library_from_source(lib_root: Path, include_dirs, force=False, tiny=
 # -------------------------------------------------------------------
 # 6. main build logic
 # -------------------------------------------------------------------
-def build(scrap_file, output_exe, fresh=False, tiny=False):
+def build(scrap_file, output_exe, fresh=False, tiny=False, single=False):
     # ---------- Transpile ----------
     print(f"Transpiling main: {scrap_file} …")
     main_cpp = "main_output.cpp"
@@ -190,6 +191,10 @@ def build(scrap_file, output_exe, fresh=False, tiny=False):
     include_dirs = set()
     library_files = []
     library_dirs = set()
+    direct_sources = []   # used only when --single is True
+
+    gcc = shutil.which('gcc') or 'gcc'
+    gpp = shutil.which('g++') or 'g++'
 
     for h in headers:
         h_abs = os.path.abspath(h)
@@ -207,30 +212,40 @@ def build(scrap_file, output_exe, fresh=False, tiny=False):
         else:
             lib_root = header_path.parent
 
-        lib_files, lib_dirs = gather_library_files(lib_root)
-        if lib_files:
-            library_files.extend(lib_files)
-            library_dirs.update(lib_dirs)
-        else:
+        if single:
+            # --single mode: collect source files directly (no archives)
             c_files, cpp_files = gather_source_files(lib_root)
             if c_files or cpp_files:
-                print(f"  No pre‑built library found for {lib_root.name}, compiling from source...")
-                new_lib, new_dir = compile_library_from_source(
-                    lib_root, include_dirs, force=fresh, tiny=tiny
-                )
-                if new_lib:
-                    library_files.append(new_lib)
-                    library_dirs.add(new_dir)
-                    print(f"  Successfully compiled {new_lib}")
-                else:
-                    print(f"  Failed to compile library for {lib_root.name}.")
+                print(f"  [--single] Adding sources from {lib_root.name}")
+                direct_sources.extend(c_files)
+                direct_sources.extend(cpp_files)
+            # Also, if there are pre‑built libraries, we may still need them
+            lib_files, lib_dirs = gather_library_files(lib_root)
+            if lib_files:
+                print(f"  [--single] Also linking pre‑built libraries for {lib_root.name}")
+                library_files.extend(lib_files)
+                library_dirs.update(lib_dirs)
+        else:
+            # Normal mode: use static archive if possible, else compile
+            lib_files, lib_dirs = gather_library_files(lib_root)
+            if lib_files:
+                library_files.extend(lib_files)
+                library_dirs.update(lib_dirs)
             else:
-                pass
-
-        if not library_files:
-            c_files, cpp_files = gather_source_files(lib_root)
-            all_c_sources.update(c_files)
-            all_cpp_sources.update(cpp_files)
+                c_files, cpp_files = gather_source_files(lib_root)
+                if c_files or cpp_files:
+                    print(f"  No pre‑built library found for {lib_root.name}, compiling from source...")
+                    new_lib, new_dir = compile_library_from_source(
+                        lib_root, include_dirs, force=fresh, tiny=tiny
+                    )
+                    if new_lib:
+                        library_files.append(new_lib)
+                        library_dirs.add(new_dir)
+                        print(f"  Successfully compiled {new_lib}")
+                    else:
+                        print(f"  Failed to compile library for {lib_root.name}.")
+                else:
+                    pass
 
     if os.path.isdir('libs'):
         include_dirs.add('libs')
@@ -240,102 +255,155 @@ def build(scrap_file, output_exe, fresh=False, tiny=False):
         if os.path.exists(gen_cpp):
             all_cpp_sources.add(gen_cpp)
 
-    # ---------- Compile program objects ----------
-    gcc = shutil.which('gcc') or 'gcc'
-    gpp = shutil.which('g++') or 'g++'
-    object_files = []
-    used_extra_flags = []
+    # ---------- Compile & Link ----------
+    if single:
+        # --- SINGLE‑COMMAND BUILD with flag retry ---
+        all_sources = list(all_cpp_sources) + list(all_c_sources) + direct_sources
+        if not all_sources:
+            print("Error: no source files to compile")
+            return 1
 
-    build_dir = Path("build_objs")
-    build_dir.mkdir(exist_ok=True)
-
-    # Define flag combos for program compilation
-    if tiny:
-        flag_combos = [
-            ['-fno-exceptions', '-fno-rtti'],
-            ['-fno-exceptions'],
-            ['-fno-rtti'],
-            []
-        ]
-    else:
-        flag_combos = [
-            ['-fno-exceptions', '-fno-rtti'],
-            []
-        ]
-
-    compiled_successfully = False
-    for extra_flags in flag_combos:
-        objects = []
-        ok = True
-        cc_flags = ['-c', '-DNDEBUG', '-O3', '-ffunction-sections', '-fdata-sections'] + extra_flags
-        cxx_flags = ['-c', '-DNDEBUG', '-O3', '-std=c++17', '-ffunction-sections', '-fdata-sections'] + extra_flags
+        # Define flag combos to try (same as normal mode)
         if tiny:
-            cc_flags += ['-flto']
-            cxx_flags += ['-flto']
+            flag_combos = [
+                ['-fno-exceptions', '-fno-rtti'],
+                ['-fno-exceptions'],
+                ['-fno-rtti'],
+                []
+            ]
+        else:
+            flag_combos = [
+                ['-fno-exceptions', '-fno-rtti'],
+                []
+            ]
 
-        for c_file in sorted(all_c_sources):
-            obj_name = build_dir / (Path(c_file).stem + ".o")
-            print(f"  [C{' (' + ','.join(extra_flags) + ')' if extra_flags else ''}] {c_file} -> {obj_name}")
-            cmd_cc = [gcc] + cc_flags + [c_file, '-o', str(obj_name)]
+        # Build base flags
+        base_flags = ['-static', '-s', '-ffunction-sections', '-fdata-sections']
+        if tiny:
+            base_flags += ['-flto', '-O3']
+        else:
+            base_flags += ['-O2']
+
+        success = False
+        for extra_flags in flag_combos:
+            cmd = [gpp] + base_flags + extra_flags
             for d in sorted(include_dirs):
-                cmd_cc.append(f'-I{d}')
-            cmd_cc.append('-I.')
-            if subprocess.run(cmd_cc).returncode != 0:
-                ok = False
-                break
-            objects.append(str(obj_name))
+                cmd.append(f'-I{d}')
+            cmd.append('-I.')
+            cmd.extend(all_sources)
+            for d in sorted(library_dirs):
+                cmd.append(f'-L{d}')
+            cmd.extend(library_files)
+            cmd.extend(['-Wl,--gc-sections', '-o', output_exe])
 
-        if ok:
-            for cpp_file in sorted(all_cpp_sources):
-                obj_name = build_dir / (Path(cpp_file).stem + ".o")
-                print(f"  [C++{' (' + ','.join(extra_flags) + ')' if extra_flags else ''}] {cpp_file} -> {obj_name}")
-                cmd_cxx = [gpp] + cxx_flags + [cpp_file, '-o', str(obj_name)]
+            print(f"Trying flags: {extra_flags if extra_flags else 'none'}")
+            print("Command:\n" + ' '.join(cmd))
+            result = subprocess.run(cmd)
+            if result.returncode == 0:
+                success = True
+                break
+            else:
+                print(f"Failed with flags {extra_flags}, trying next...\n")
+
+        if success:
+            print(f"Successfully built {output_exe}")
+            return 0
+        else:
+            print("Build failed with all flag combinations.")
+            return 1
+
+    else:
+        # NORMAL MODE: compile objects separately, then link
+        object_files = []
+        used_extra_flags = []
+
+        build_dir = Path("build_objs")
+        build_dir.mkdir(exist_ok=True)
+
+        if tiny:
+            flag_combos = [
+                ['-fno-exceptions', '-fno-rtti'],
+                ['-fno-exceptions'],
+                ['-fno-rtti'],
+                []
+            ]
+        else:
+            flag_combos = [
+                ['-fno-exceptions', '-fno-rtti'],
+                []
+            ]
+
+        compiled_successfully = False
+        for extra_flags in flag_combos:
+            objects = []
+            ok = True
+            cc_flags = ['-c', '-DNDEBUG', '-O3', '-ffunction-sections', '-fdata-sections'] + extra_flags
+            cxx_flags = ['-c', '-DNDEBUG', '-O3', '-std=c++17', '-ffunction-sections', '-fdata-sections'] + extra_flags
+            if tiny:
+                cc_flags += ['-flto']
+                cxx_flags += ['-flto']
+
+            for c_file in sorted(all_c_sources):
+                obj_name = build_dir / (Path(c_file).stem + ".o")
+                print(f"  [C{' (' + ','.join(extra_flags) + ')' if extra_flags else ''}] {c_file} -> {obj_name}")
+                cmd_cc = [gcc] + cc_flags + [c_file, '-o', str(obj_name)]
                 for d in sorted(include_dirs):
-                    cmd_cxx.append(f'-I{d}')
-                cmd_cxx.append('-I.')
-                if subprocess.run(cmd_cxx).returncode != 0:
+                    cmd_cc.append(f'-I{d}')
+                cmd_cc.append('-I.')
+                if subprocess.run(cmd_cc).returncode != 0:
                     ok = False
                     break
                 objects.append(str(obj_name))
 
-        if ok:
-            object_files = objects
-            used_extra_flags = extra_flags
-            compiled_successfully = True
-            break
+            if ok:
+                for cpp_file in sorted(all_cpp_sources):
+                    obj_name = build_dir / (Path(cpp_file).stem + ".o")
+                    print(f"  [C++{' (' + ','.join(extra_flags) + ')' if extra_flags else ''}] {cpp_file} -> {obj_name}")
+                    cmd_cxx = [gpp] + cxx_flags + [cpp_file, '-o', str(obj_name)]
+                    for d in sorted(include_dirs):
+                        cmd_cxx.append(f'-I{d}')
+                    cmd_cxx.append('-I.')
+                    if subprocess.run(cmd_cxx).returncode != 0:
+                        ok = False
+                        break
+                    objects.append(str(obj_name))
+
+            if ok:
+                object_files = objects
+                used_extra_flags = extra_flags
+                compiled_successfully = True
+                break
+            else:
+                for obj in objects:
+                    try:
+                        os.unlink(obj)
+                    except OSError:
+                        pass
+
+        if not compiled_successfully:
+            print("Error: program compilation failed.")
+            return 1
+
+        # Link
+        link_flags = [gpp, '-static', '-s',
+                      '-ffunction-sections', '-fdata-sections']
+        link_flags += used_extra_flags
+        if tiny:
+            link_flags += ['-flto', '-O3']
+
+        cmd_link = link_flags + object_files
+        for d in sorted(library_dirs):
+            cmd_link.append(f'-L{d}')
+        cmd_link.extend(library_files)
+        cmd_link.extend(['-Wl,--gc-sections', '-o', output_exe])
+
+        print("Linking with:\n" + ' '.join(cmd_link))
+        result = subprocess.run(cmd_link)
+        if result.returncode != 0:
+            print("Build failed.")
         else:
-            for obj in objects:
-                try:
-                    os.unlink(obj)
-                except OSError:
-                    pass
-            # try next flag combo
-            continue
-
-    if not compiled_successfully:
-        print("Error: program compilation failed.")
-        return 1
-
-    # ---------- Link ----------
-    link_flags = [gpp, '-static', '-s',
-                  '-ffunction-sections', '-fdata-sections']
-    link_flags += used_extra_flags
-    if tiny:
-        link_flags += ['-flto', '-O3']
-
-    cmd_link = link_flags + object_files
-    for d in sorted(library_dirs):
-        cmd_link.append(f'-L{d}')
-    cmd_link.extend(library_files)
-    cmd_link.extend(['-Wl,--gc-sections', '-o', output_exe])
-
-    print("Linking with:\n" + ' '.join(cmd_link))
-    result = subprocess.run(cmd_link)
-    if result.returncode != 0:
-        print("Build failed.")
-    else:
-        print(f"Successfully built {output_exe}")
-    return result.returncode
+            print(f"Successfully built {output_exe}")
+        return result.returncode
 
 # -------------------------------------------------------------------
 # main entry
@@ -343,6 +411,7 @@ def build(scrap_file, output_exe, fresh=False, tiny=False):
 if __name__ == '__main__':
     fresh = False
     tiny = False
+    single = False
     args = sys.argv[1:]
 
     if '--fresh' in args:
@@ -351,10 +420,13 @@ if __name__ == '__main__':
     if '--tiny' in args:
         tiny = True
         args.remove('--tiny')
+    if '--single' in args:
+        single = True
+        args.remove('--single')
 
     if len(args) != 2:
-        print("Usage: python STS_Compiler.py [--fresh] [--tiny] input.scrap output.exe")
+        print("Usage: python STS_Compiler.py [--fresh] [--tiny] [--single] input.scrap output.exe")
         sys.exit(1)
 
     input_scrap, output_exe = args
-    sys.exit(build(input_scrap, output_exe, fresh=fresh, tiny=tiny))
+    sys.exit(build(input_scrap, output_exe, fresh=fresh, tiny=tiny, single=single))

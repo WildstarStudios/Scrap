@@ -18,10 +18,10 @@ class AskHandler(StatementHandler):
     def generate(self, node, indent=''):
         var, prompt = node[1], node[2]
         escaped = prompt.replace('\\', '\\\\').replace('"', '\\"')
-        # Dynamic string – use our custom SSO type
+        # Register as dynamic string (must be declared earlier, e.g., `var user as string`)
         register_variable_type(var, 'string')
         return (
-            f'{indent}string {var};\n'
+            f'{indent}string_clear(&{var});\n'
             f'{indent}printf("{escaped}");\n'
             f'{indent}string_readline(&{var}, stdin);'
         )

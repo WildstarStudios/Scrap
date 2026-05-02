@@ -1,6 +1,7 @@
 import re
 from scrap.core.handler_base import StatementHandler, strip_comments
 from scrap.core.utils import resolve_dotted_calls, get_variable_type, is_static_string, is_dynamic_string, get_variable_size
+from scrap.handlers.declarations.var import VarHandler
 
 class SetHandler(StatementHandler):
     keywords = []
@@ -24,6 +25,8 @@ class SetHandler(StatementHandler):
         if not m:
             raise SyntaxError("Expected: variable = expression")
         name = m.group(1)
+        # Record that this variable is mutated
+        VarHandler.mark_mutated(name)
         value = m.group(2).strip()
         if value.startswith('"') and value.endswith('"') and '+' not in value:
             return ('SET_STRING', name, value[1:-1]), start_index + 1
@@ -36,17 +39,14 @@ class SetHandler(StatementHandler):
             literal = node[2]
             escaped = literal.replace('\\', '\\\\').replace('"', '\\"')
             if is_static_string(name):
-                # static char array – use strcpy; if literal too long, it's a C error (safe enough)
                 return f'{indent}strcpy({name}, "{escaped}");'
             elif is_dynamic_string(name):
                 return f'{indent}string_set(&{name}, "{escaped}");'
             else:
-                # unknown type, fallback to assignment
                 return f'{indent}{name} = "{escaped}";'
         elif kind == 'SET_EXPR':
             expr = resolve_dotted_calls(node[2])
             if is_static_string(name):
-                # assume expr returns const char*
                 return f'{indent}strcpy({name}, {expr});'
             elif is_dynamic_string(name):
                 return f'{indent}string_set(&{name}, {expr});'

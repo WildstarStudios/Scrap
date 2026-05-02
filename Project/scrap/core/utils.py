@@ -183,7 +183,7 @@ def is_static_string(name):
 def uses_dynamic_string():
     return _USES_DYNAMIC_STRING
 
-def mark_uses_dynamic_string():          # <-- added
+def mark_uses_dynamic_string():
     global _USES_DYNAMIC_STRING
     _USES_DYNAMIC_STRING = True
 
@@ -206,33 +206,45 @@ static void string_init(string* s) {
     s->capacity = 24;
 }
 
-// Ensure capacity to AT LEAST 'needed' bytes (exact allocation)
+static void string_clear(string* s) {
+    s->length = 0;
+    if (s->data != s->small) {
+        s->data[0] = '\\0';
+    } else {
+        s->small[0] = '\\0';
+    }
+}
+
+// Exponential growth – double capacity, but at least `needed`
 static void string_ensure_capacity(string* s, int needed) {
     if (needed <= s->capacity) return;
-    // Allocate exactly 'needed' bytes (no extra slack)
+    int newcap = s->capacity * 2;
+    if (newcap < needed) newcap = needed;
     if (s->data == s->small) {
-        char* newdata = (char*)malloc(needed);
+        char* newdata = (char*)malloc(newcap);
         memcpy(newdata, s->small, s->length + 1);
         s->data = newdata;
     } else {
-        s->data = (char*)realloc(s->data, needed);
+        s->data = (char*)realloc(s->data, newcap);
     }
-    s->capacity = needed;
+    s->capacity = newcap;
 }
 
-// Optional: shrink buffer to exactly match length+1
-static void string_shrink_to_fit(string* s) {
+// Shrink only if waste > 25% of capacity (capacity > length * 1.25)
+static void string_shrink_to_fit_if_needed(string* s) {
     int needed = s->length + 1;
-    if (needed <= 24) {
-        if (s->data != s->small) {
-            memcpy(s->small, s->data, needed);
-            free(s->data);
-            s->data = s->small;
-            s->capacity = 24;
+    if (s->capacity > (s->length * 5 / 4)) {
+        if (needed <= 24) {
+            if (s->data != s->small) {
+                memcpy(s->small, s->data, needed);
+                free(s->data);
+                s->data = s->small;
+                s->capacity = 24;
+            }
+        } else if (needed < s->capacity) {
+            s->data = (char*)realloc(s->data, needed);
+            s->capacity = needed;
         }
-    } else if (needed < s->capacity) {
-        s->data = (char*)realloc(s->data, needed);
-        s->capacity = needed;
     }
 }
 
@@ -244,12 +256,11 @@ static void string_set(string* s, const char* str) {
 }
 
 static void string_readline(string* s, FILE* fp) {
-    string_init(s);
+    string_clear(s);
     int c;
     int pos = 0;
     while ((c = fgetc(fp)) != EOF && c != '\\n') {
         if (pos + 1 >= s->capacity) {
-            // grow exactly to pos+2 (current length+1 for next char)
             string_ensure_capacity(s, pos + 2);
         }
         s->data[pos++] = c;
@@ -261,8 +272,8 @@ static void string_readline(string* s, FILE* fp) {
         s->data[pos] = '\\0';
         s->length = pos;
     }
-    // Shrink to exact size (optional – comment out if speed matters more)
-    string_shrink_to_fit(s);
+    // Automatically shrink if waste > 25%
+    string_shrink_to_fit_if_needed(s);
 }
 
 static void string_free(string* s) {
@@ -310,12 +321,12 @@ def resolve_dotted_calls(text: str) -> str:
         print(f"[DEBUG utils.py] resolve_dotted_calls IN: {text!r}")
 
     def replacer(match):
-        full = match.group(0)                # e.g., 'rapidfuzz.fuzz.ratio('
-        dotted_chain = match.group(1)        # 'rapidfuzz.fuzz.ratio'
+        full = match.group(0)
+        dotted_chain = match.group(1)
         paren_idx = full.find('(')
         if paren_idx == -1:
             return full
-        args_start = full[paren_idx:]        # '(' + rest
+        args_start = full[paren_idx:]
         parts = dotted_chain.split('.')
         alias = parts[0]
 
@@ -324,14 +335,11 @@ def resolve_dotted_calls(text: str) -> str:
 
         if is_library_alias(alias):
             lib = _LIBRARY_ALIASES[alias]
-            # C++ namespace alias? (empty prefix, empty func_map)
             if lib['prefix'] == '' and not lib['functions']:
                 cpp_name = '::'.join(parts)
                 if DEBUG:
                     print(f"[DEBUG utils.py]   -> C++ qualified: {cpp_name}")
                 return cpp_name + args_start
-
-            # C library alias: method is everything after the first dot
             method = '.'.join(parts[1:])
             info = get_library_function(alias, method)
             if info:
@@ -346,7 +354,6 @@ def resolve_dotted_calls(text: str) -> str:
             if DEBUG:
                 print(f"[DEBUG utils.py]   alias '{alias}' not in _LIBRARY_ALIASES (keys: {list(_LIBRARY_ALIASES.keys())})")
 
-        # Variable method call?
         if alias in _VARIABLE_LIB_MAP:
             lib_alias = _VARIABLE_LIB_MAP[alias]
             method = '.'.join(parts[1:])
@@ -359,7 +366,6 @@ def resolve_dotted_calls(text: str) -> str:
 
         return full
 
-    # Match one or more dot‑separated identifiers before '('
     result = re.sub(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)\s*\(', replacer, text)
     if DEBUG:
         print(f"[DEBUG utils.py] resolve_dotted_calls OUT: {result!r}")
@@ -369,17 +375,11 @@ def resolve_dotted_calls(text: str) -> str:
 #  Full dotted‑call resolution WITH handle insertion
 # ----------------------------------------------------------------------
 def resolve_dotted_call_with_handle(text: str) -> str:
-    """
-    Resolves dotted calls entirely, inserting `var.get()` as the first
-    argument when a variable method call requires a handle.
-    Replaces the **whole** dotted call (including its argument list).
-    """
     result = []
     i = 0
     n = len(text)
 
     while i < n:
-        # Match a chain of identifiers separated by dots, ending with '('
         m = re.compile(r'\b([a-zA-Z_]\w*(?:\.[a-zA-Z_]\w*)+)\s*\(').search(text, i)
         if not m:
             result.append(text[i:])
@@ -387,8 +387,8 @@ def resolve_dotted_call_with_handle(text: str) -> str:
 
         result.append(text[i:m.start()])
 
-        dotted_chain = m.group(1)          # e.g., 'rapidfuzz.fuzz.ratio' or 'db.exec'
-        paren_pos = m.end() - 1            # position of '('
+        dotted_chain = m.group(1)
+        paren_pos = m.end() - 1
         parts = dotted_chain.split('.')
         var_name = parts[0]
         method = '.'.join(parts[1:])
@@ -423,7 +423,6 @@ def resolve_dotted_call_with_handle(text: str) -> str:
 
         resolved = None
 
-        # Variable method call?
         if var_name in _VARIABLE_LIB_MAP:
             lib_alias = _VARIABLE_LIB_MAP[var_name]
             info = get_library_function(lib_alias, method)
@@ -435,11 +434,9 @@ def resolve_dotted_call_with_handle(text: str) -> str:
                     new_inner = inner
                 resolved = f'{full_name}({new_inner})'
 
-        # Static alias call? (C or C++ namespace)
         if resolved is None and is_library_alias(var_name):
             lib = _LIBRARY_ALIASES.get(var_name)
             if lib and lib['prefix'] == '' and not lib['functions']:
-                # C++ namespace: replace all dots with ::
                 cpp_name = '::'.join(parts)
                 resolved = f'{cpp_name}({inner})'
             else:

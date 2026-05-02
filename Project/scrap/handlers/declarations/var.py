@@ -9,6 +9,15 @@ from scrap.core.utils import (
 class VarHandler(StatementHandler):
     keywords = ['var ']
     _raw_counter = 0
+    _mutated_vars = set()   # track variable names that are assigned to later
+
+    @classmethod
+    def mark_mutated(cls, name):
+        cls._mutated_vars.add(name)
+
+    @classmethod
+    def clear_mutated(cls):
+        cls._mutated_vars.clear()
 
     def can_handle(self, line):
         return line.strip().startswith('var ')
@@ -62,18 +71,17 @@ class VarHandler(StatementHandler):
             else:
                 cpp_type = infer_type_from_value(value)
 
-        # If initializer is a string literal
+        # If initializer is a string literal and variable is never mutated -> const char*
         if value.startswith('"') and value.endswith('"'):
             literal = value[1:-1]
             escaped = literal.replace('\\', '\\\\').replace('"', '\\"')
-            if cpp_type == 'string':   # dynamic
+            if name not in self._mutated_vars:
+                # constant string, no heap allocation
+                return f'{indent}const char* {name} = "{escaped}";'
+            else:
+                # dynamic string
                 register_variable_type(name, 'string')
                 return f'{indent}string {name}; string_init(&{name}); string_set(&{name}, "{escaped}");'
-            else:   # static
-                size = len(literal) + 1
-                cpp_type = f'char[{size}]'
-                register_variable_type(name, cpp_type, size)
-                return f'{indent}{cpp_type} {name} = "{escaped}";'
 
         # Not a string literal
         register_variable_type(name, cpp_type)

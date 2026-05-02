@@ -1,5 +1,6 @@
 import re
 from scrap.core.handler_base import StatementHandler, get_indent, parse_block_body, generate_deferred_lines, strip_comments
+from scrap.core.optimized_code import generate_optimized_ratio_block
 
 class ForEachHandler(StatementHandler):
     keywords = ['for ']
@@ -25,7 +26,10 @@ class ForEachHandler(StatementHandler):
         lines = [f'{indent}for (auto& {var} : {container}) {{']
         inner = indent + '    '
         for h, n in body:
-            lines.append(h.generate(n, inner))
+            if h is None and n[0] == 'OPTIMIZED_RATIO':
+                lines.extend(generate_optimized_ratio_block(n[1], inner))
+            else:
+                lines.append(h.generate(n, inner))
         lines.extend(generate_deferred_lines(deferred, inner))
         lines.append(f'{indent}}}')
         return '\n'.join(lines)

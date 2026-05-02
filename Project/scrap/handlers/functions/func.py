@@ -1,6 +1,7 @@
 import re
 from scrap.core.handler_base import StatementHandler, get_indent, strip_comments, parse_block_body, generate_deferred_lines, get_handlers
 from scrap.core.utils import to_cpp_type
+from scrap.core.optimized_code import generate_optimized_ratio_block
 
 class FuncHandler(StatementHandler):
     keywords = ['func ']
@@ -29,7 +30,6 @@ class FuncHandler(StatementHandler):
                     params.append((pm.group(1), pm.group(2) if pm.group(2) else 'auto'))
                 else:
                     raise SyntaxError(f"Bad parameter: {p}")
-        # Now parse the body
         body, deferred, next_i = parse_block_body(lines, start_index + 1, base_indent)
         return ('FUNC', (name, params, ret_type, body, deferred)), next_i
 
@@ -43,7 +43,10 @@ class FuncHandler(StatementHandler):
         lines = [f'{to_cpp_type(ret_type)} {cpp_name}({cpp_params}) {{']
         inner = '    '
         for h, n in body:
-            lines.append(h.generate(n, inner))
+            if h is None and n[0] == 'OPTIMIZED_RATIO':
+                lines.extend(generate_optimized_ratio_block(n[1], inner))
+            else:
+                lines.append(h.generate(n, inner))
         lines.extend(generate_deferred_lines(deferred, inner))
         lines.append('}')
         return '\n'.join(lines)

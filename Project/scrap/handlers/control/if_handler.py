@@ -1,6 +1,7 @@
 import re
 from scrap.core.handler_base import StatementHandler, get_indent, strip_comments, parse_block_body, generate_deferred_lines
 from scrap.core.utils import resolve_dotted_call_with_handle, auto_fill_resolved_call, resolve_string_comparison
+from scrap.core.optimized_code import generate_optimized_ratio_block
 
 class IfHandler(StatementHandler):
     keywords = ['if ']
@@ -67,7 +68,7 @@ class IfHandler(StatementHandler):
             if cond:
                 cond = resolve_dotted_call_with_handle(cond)
                 cond = auto_fill_resolved_call(cond)
-                cond = resolve_string_comparison(cond)          # string fix
+                cond = resolve_string_comparison(cond)
                 cond = cond.replace('not ', '!').replace(' and ', ' && ').replace(' or ', ' || ')
                 code.append(f'{indent}{kw} ({cond}) {{')
             else:
@@ -75,7 +76,10 @@ class IfHandler(StatementHandler):
             inner = indent + '    '
             for body, deferred in body_data:
                 for h, n in body:
-                    code.append(h.generate(n, inner))
+                    if h is None and n[0] == 'OPTIMIZED_RATIO':
+                        code.extend(generate_optimized_ratio_block(n[1], inner))
+                    else:
+                        code.append(h.generate(n, inner))
                 code.extend(generate_deferred_lines(deferred, inner))
             code.append(f'{indent}}}')
         return '\n'.join(code)

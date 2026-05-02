@@ -1,6 +1,7 @@
 import re
 from scrap.core.handler_base import StatementHandler, get_indent, strip_comments, parse_block_body, generate_deferred_lines
 from scrap.core.utils import resolve_dotted_call_with_handle, resolve_string_comparison
+from scrap.core.optimized_code import generate_optimized_ratio_block
 
 class WhileHandler(StatementHandler):
     keywords = ['while ']
@@ -27,7 +28,10 @@ class WhileHandler(StatementHandler):
         lines = [f'{indent}while ({cond}) {{']
         inner = indent + '    '
         for h, n in body:
-            lines.append(h.generate(n, inner))
+            if h is None and n[0] == 'OPTIMIZED_RATIO':
+                lines.extend(generate_optimized_ratio_block(n[1], inner))
+            else:
+                lines.append(h.generate(n, inner))
         lines.extend(generate_deferred_lines(deferred, inner))
         lines.append(f'{indent}}}')
         return '\n'.join(lines)
