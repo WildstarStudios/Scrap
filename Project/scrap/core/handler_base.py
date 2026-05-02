@@ -1,36 +1,17 @@
-import importlib
-import inspect
-import os
-import sys
 import re
 
-_HANDLERS = None
+# Global handler list for block parsing
+_handlers = []
 
-def discover_handlers():
-    global _HANDLERS
-    if _HANDLERS is not None:
-        return _HANDLERS
-    _HANDLERS = []
-    base_dir = os.path.dirname(os.path.dirname(__file__))   # scrap/
-    handlers_dir = os.path.join(base_dir, 'handlers')
-    for root, _, files in os.walk(handlers_dir):
-        for file in files:
-            if file.endswith('.py') and not file.startswith('__'):
-                rel_path = os.path.relpath(root, handlers_dir)
-                parts = rel_path.split(os.sep) + [file[:-3]]
-                module_name = 'scrap.handlers.' + '.'.join(parts)
-                try:
-                    mod = importlib.import_module(module_name)
-                    for name, obj in inspect.getmembers(mod, inspect.isclass):
-                        if issubclass(obj, StatementHandler) and obj is not StatementHandler:
-                            _HANDLERS.append(obj())
-                except Exception as e:
-                    print(f"Warning: could not import {module_name}: {e}", file=sys.stderr)
-    return _HANDLERS
+def set_handlers(hlist):
+    global _handlers
+    _handlers = hlist
+
+def get_handlers():
+    return _handlers
 
 class StatementHandler:
     keywords = []
-    required_headers = set()
 
     def can_handle(self, line: str) -> bool:
         return any(line.startswith(kw) for kw in self.keywords)
@@ -41,8 +22,6 @@ class StatementHandler:
     def generate(self, node, indent='') -> str:
         raise NotImplementedError
 
-    def check_semantics(self, node, symbols):
-        pass
 
 def strip_comments(line):
     in_quotes = False
@@ -60,7 +39,7 @@ def parse_block_body(lines, start_index, base_indent):
     body = []
     deferred = []
     i = start_index
-    handlers = discover_handlers()
+    handlers = get_handlers()
     while i < len(lines):
         raw = lines[i]
         stripped = strip_comments(raw).strip()

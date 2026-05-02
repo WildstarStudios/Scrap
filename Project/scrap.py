@@ -1,11 +1,37 @@
 #!/usr/bin/env python3
-"""Scrap transpiler – high‑level Pythonic language to C++."""
-import sys
-from scrap.core.handler_base import discover_handlers, strip_comments, get_indent, generate_deferred_lines
-from scrap.core.symbol_table import SemanticAnalyzer
+import sys, re
+from scrap.core.handler_base import (
+    strip_comments, get_indent, parse_block_body, generate_deferred_lines,
+    set_handlers, get_handlers
+)
+from scrap.handlers.interop.import_lib import ImportLibHandler
+from scrap.handlers.declarations.var import VarHandler
+from scrap.handlers.functions.func import FuncHandler
+from scrap.handlers.control.if_handler import IfHandler
+from scrap.handlers.control.while_handler import WhileHandler
+from scrap.handlers.control.break_handler import BreakHandler
+from scrap.handlers.control.return_handler import ReturnHandler
+from scrap.handlers.io.log import LogHandler
+from scrap.handlers.memory.defer import DeferHandler
+from scrap.handlers.calls.function_call import FunctionCallHandler
+from scrap.core.debug import DEBUG
+
+HANDLERS = [
+    ImportLibHandler(),
+    FuncHandler(),
+    VarHandler(),
+    IfHandler(),
+    WhileHandler(),
+    BreakHandler(),
+    ReturnHandler(),
+    LogHandler(),
+    DeferHandler(),
+    FunctionCallHandler(),
+]
+
+set_handlers(HANDLERS)
 
 def join_multiline_statements(lines):
-    """Join lines that end with a comma, open paren or bracket with the next line."""
     joined = []
     i = 0
     while i < len(lines):
@@ -13,12 +39,10 @@ def join_multiline_statements(lines):
         if not raw.strip():
             i += 1
             continue
-        # If line ends with , ( [ and next line is indented more, join them.
         while (raw.strip().endswith(',') or raw.strip().endswith('(') or raw.strip().endswith('[')) \
-              and i + 1 < len(lines):
-            next_raw = lines[i + 1].rstrip('\n')
+              and i+1 < len(lines):
+            next_raw = lines[i+1].rstrip('\n')
             if not next_raw.strip():
-                # skip empty lines between parts
                 i += 1
                 continue
             if get_indent(next_raw) <= get_indent(raw):
@@ -29,6 +53,37 @@ def join_multiline_statements(lines):
         i += 1
     return joined
 
+def collect_headers_from_nodes(nodes):
+    """Recursively collect required headers from a list of (handler, node) tuples."""
+    headers = set()
+    for h, node in nodes:
+        # handler's own headers
+        if hasattr(h, 'required_headers'):
+            rh = h.required_headers
+            if callable(rh):
+                rh = rh(node)
+            headers.update(rh)
+
+        # recurse into function bodies, if blocks, etc.
+        kind = node[0]
+        if kind == 'FUNC':
+            _, _, _, body, deferred = node[1]
+            headers.update(collect_headers_from_nodes(body))
+        elif kind == 'IF':
+            for _, body_data in node[1]:
+                for body, deferred in body_data:
+                    headers.update(collect_headers_from_nodes(body))
+        elif kind in ('WHILE', 'REPEAT'):
+            _, body, deferred = node[1]
+            headers.update(collect_headers_from_nodes(body))
+        elif kind == 'FOR_RANGE':
+            _, _, _, _, _, body, deferred = node[1]
+            headers.update(collect_headers_from_nodes(body))
+        elif kind == 'FOR_EACH':
+            _, _, _, body, deferred = node[1]
+            headers.update(collect_headers_from_nodes(body))
+    return headers
+
 def main():
     if len(sys.argv) != 3:
         print("Usage: python scrap.py input.scrap output.cpp")
@@ -37,10 +92,7 @@ def main():
     with open(sys.argv[1], 'r') as f:
         source = [line.rstrip('\n') for line in f.readlines()]
 
-    # Allow multi‑line function calls (comma / paren continuation)
     source = join_multiline_statements(source)
-
-    discover_handlers()
 
     top_nodes = []
     functions = []
@@ -55,8 +107,10 @@ def main():
             raise SyntaxError(f"Unexpected indentation at line {i+1}")
 
         handled = False
-        for h in discover_handlers():
+        for h in HANDLERS:
             if h.can_handle(stripped):
+                if DEBUG:
+                    print(f"[DEBUG scrap.py] Line {i+1} '{stripped}' -> handler {type(h).__name__}")
                 node, i = h.parse(source, i)
                 if node[0] == 'FUNC':
                     functions.append((h, node))
@@ -67,76 +121,57 @@ def main():
         if not handled:
             raise SyntaxError(f"Unknown statement at line {i+1}: {stripped}")
 
-    SemanticAnalyzer.analyze(top_nodes, functions)
-
-    # Recursive header collection from all statements (handlers, block bodies)
-    def collect_headers_from_nodes(nodes):
-        hdrs = set()
-        for h, n in nodes:
-            rh = getattr(h, 'required_headers', set())
+    # Collect all required headers (recursively)
+    all_headers = set()
+    all_headers.update(collect_headers_from_nodes(top_nodes))
+    all_headers.update(collect_headers_from_nodes(functions))
+    # Also include headers from import lib handlers at top level
+    for h, n in top_nodes + functions:
+        if hasattr(h, 'required_headers'):
+            rh = h.required_headers
             if callable(rh):
                 rh = rh(n)
-            hdrs.update(rh)
-
-            kind = n[0]
-            if kind == 'FUNC':
-                _, _, _, body, deferred = n[1]
-                hdrs.update(collect_headers_from_nodes(body))
-            elif kind == 'IF':
-                for _, body_data in n[1]:
-                    for body, deferred in body_data:
-                        hdrs.update(collect_headers_from_nodes(body))
-            elif kind in ('WHILE', 'REPEAT'):
-                _, body, deferred = n[1]
-                hdrs.update(collect_headers_from_nodes(body))
-            elif kind == 'FOR_RANGE':
-                _, _, _, _, _, body, deferred = n[1]
-                hdrs.update(collect_headers_from_nodes(body))
-            elif kind == 'FOR_EACH':
-                _, _, _, body, deferred = n[1]
-                hdrs.update(collect_headers_from_nodes(body))
-        return hdrs
-
-    headers = collect_headers_from_nodes(top_nodes + functions)
-
-    # Pre‑main content (smart wrappers, extern "C" blocks)
-    pre_main = []
-    for h, n in top_nodes + functions:
-        if hasattr(h, 'generate_pre_main'):
-            pre_main.append(h.generate_pre_main(n))
+            all_headers.update(rh)
 
     output = []
-    for hdr in sorted(headers):
+    for hdr in sorted(all_headers):
         output.append(f'#include {hdr}')
-    output.extend(pre_main)
 
-    # Function definitions before main()
+    # Pre‑main content from import libs
+    for h, n in top_nodes + functions:
+        if hasattr(h, 'generate_pre_main'):
+            pre = h.generate_pre_main(n)
+            if pre:
+                output.append(pre)
+
+    # Function definitions
     for h, n in functions:
         if hasattr(h, 'generate_function'):
             output.append(h.generate_function(n))
 
     # main() wrapper
-    if top_nodes or any(n[0] == 'FUNC' and n[1][0] == 'main' for _, n in functions):
-        if any(n[0] == 'FUNC' and n[1][0] == 'main' for _, n in functions):
-            output.append('')
-            output.append('int main() { return user_main(); }')
-        else:
-            output.append('')
-            output.append('int main() {')
-            indent = '    '
-            deferred_main = []
-            for h, n in top_nodes:
-                if n[0] == 'DEFER':
-                    deferred_main.append(n)
-                else:
-                    output.append(h.generate(n, indent))
-            output.extend(generate_deferred_lines(deferred_main, indent))
-            output.append('    return 0;')
-            output.append('}')
+    has_main_func = any(n[0] == 'FUNC' and n[1][0] == 'main' for _, n in functions)
+    if has_main_func:
+        output.append('int main() { return user_main(); }')
+    else:
+        output.append('int main() {')
+        indent = '    '
+        deferred_main = []
+        for h, n in top_nodes:
+            if n[0] == 'DEFER':
+                deferred_main.append(n)
+            else:
+                output.append(h.generate(n, indent))
+        output.extend(generate_deferred_lines(deferred_main, indent))
+        output.append('    return 0;')
+        output.append('}')
+
+    final_code = '\n'.join(output) + '\n'
+    final_code = re.sub(r'\bnull\b', 'nullptr', final_code)
 
     with open(sys.argv[2], 'w') as f:
-        f.write('\n'.join(output) + '\n')
-    print(f"✓ Transpiled '{sys.argv[1]}' → '{sys.argv[2]}'")
+        f.write(final_code)
+    print(f"✓ Transpiled → {sys.argv[2]}")
 
 if __name__ == '__main__':
     main()

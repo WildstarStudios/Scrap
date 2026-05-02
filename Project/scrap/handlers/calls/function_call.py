@@ -1,23 +1,18 @@
 import re
 from scrap.core.handler_base import StatementHandler, strip_comments
-from scrap.core.utils import is_cpp_alias, resolve_alias, resolve_dotted_calls
+from scrap.core.utils import resolve_dotted_call_with_handle, auto_fill_arguments
 
 class FunctionCallHandler(StatementHandler):
-    keywords = []   # custom detection
+    keywords = []
 
     def can_handle(self, line):
         stripped = line.strip()
-        # Must start with identifier (dotted allowed) followed by '('
         if not re.match(r'^[a-zA-Z_][\w.]*\(', stripped):
             return False
-        # Exclude known statement starters
-        if stripped.startswith((
-            'var ', 'list ', 'array ', 'if ', 'elif ', 'else',
-            'while ', 'for ', 'repeat ', 'func ', 'log ', 'ask ',
-            'pause', 'break', 'return', 'defer ', 'import lib'
-        )):
+        if stripped.startswith(('var ', 'list ', 'array ', 'if ', 'elif ', 'else',
+                                'while ', 'for ', 'repeat ', 'func ', 'log ', 'ask ',
+                                'pause', 'break', 'return', 'defer ', 'import lib')):
             return False
-        # Exclude assignments and block starters
         if '=' in stripped or stripped.endswith(':'):
             return False
         return True
@@ -34,24 +29,47 @@ class FunctionCallHandler(StatementHandler):
 
     def generate(self, node, indent=''):
         func_name, args = node[1], node[2]
-        resolved = self._resolve_dotted(func_name)
-        # Resolve any dotted calls inside arguments as well
-        args = [resolve_dotted_calls(a) for a in args]
-        return f'{indent}{resolved}({", ".join(args)});'
+        call_str = f'{func_name}({", ".join(args)})'
+        resolved = resolve_dotted_call_with_handle(call_str)
 
-    def _resolve_dotted(self, name):
-        """ImGui.Begin -> ImGui::Begin (C++ namespace)"""
-        if '.' in name:
-            parts = name.split('.')
-            alias = parts[0]
-            if is_cpp_alias(alias):
-                namespace = resolve_alias(alias)
-                return namespace + '::' + '::'.join(parts[1:])
-        return name
+        # Extract function name and argument list from resolved string,
+        # using the same safe splitter that ignores commas inside strings/parens.
+        m = re.match(r'^([a-zA-Z_]\w*)\(', resolved)
+        if m:
+            fn = m.group(1)
+            # locate the matching closing parenthesis
+            start = resolved.index('(')
+            i = start + 1
+            depth = 1
+            in_str = False
+            str_char = None
+            while i < len(resolved) and depth > 0:
+                c = resolved[i]
+                if in_str:
+                    if c == '\\' and i+1 < len(resolved):
+                        i += 1
+                    elif c == str_char:
+                        in_str = False
+                else:
+                    if c == '"' or c == "'":
+                        in_str = True
+                        str_char = c
+                    elif c == '(':
+                        depth += 1
+                    elif c == ')':
+                        depth -= 1
+                i += 1
+            inner = resolved[start+1 : i-1].strip()
+            # safe split
+            arg_list = self._split_args(inner)
+            # auto‑fill missing pointer arguments
+            filled_args = auto_fill_arguments(fn, arg_list)
+            resolved = f'{fn}({", ".join(filled_args)})'
+
+        return f'{indent}{resolved};'
 
     @staticmethod
     def _split_args(s):
-        """Split arguments, respecting quotes and parentheses."""
         args = []
         current = []
         parens = 0

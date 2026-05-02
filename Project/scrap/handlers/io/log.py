@@ -1,4 +1,5 @@
 from scrap.core.handler_base import StatementHandler, strip_comments
+from scrap.core.utils import resolve_dotted_call_with_handle, auto_fill_resolved_call
 
 class LogHandler(StatementHandler):
     keywords = ['log ']
@@ -9,36 +10,22 @@ class LogHandler(StatementHandler):
     def parse(self, lines, start_index):
         line = strip_comments(lines[start_index]).strip()
         args_str = line[4:].strip()
-        args = self._split_args(args_str)
+        args = [a.strip() for a in args_str.split(',')]
         return ('LOG', args), start_index + 1
 
     def generate(self, node, indent=''):
         args = node[1]
         parts = []
         for i, arg in enumerate(args):
+            # Resolve dotted calls
+            resolved = resolve_dotted_call_with_handle(arg)
+            # Auto‑fill if it's a function call
+            if '(' in resolved:
+                resolved = auto_fill_resolved_call(resolved)
             if i > 0:
                 parts.append(' << " "')
-            parts.append(f' << {arg}')
+            parts.append(f' << {resolved}')
         chain = ''.join(parts)
         return f'{indent}std::cout{chain} << std::endl;'
 
     required_headers = {'<iostream>'}
-
-    @staticmethod
-    def _split_args(s):
-        """Split arguments by comma, respecting quotes."""
-        args = []
-        current = []
-        in_quotes = False
-        for ch in s:
-            if ch == '"':
-                in_quotes = not in_quotes
-                current.append(ch)
-            elif ch == ',' and not in_quotes:
-                args.append(''.join(current).strip())
-                current = []
-            else:
-                current.append(ch)
-        if current:
-            args.append(''.join(current).strip())
-        return args

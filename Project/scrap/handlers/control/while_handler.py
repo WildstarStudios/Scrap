@@ -1,6 +1,6 @@
 import re
-from scrap.core.handler_base import StatementHandler, get_indent, parse_block_body, generate_deferred_lines, strip_comments
-from scrap.core.utils import resolve_dotted_calls
+from scrap.core.handler_base import StatementHandler, get_indent, strip_comments, parse_block_body, generate_deferred_lines
+from scrap.core.utils import resolve_dotted_call_with_handle
 
 class WhileHandler(StatementHandler):
     keywords = ['while ']
@@ -12,16 +12,17 @@ class WhileHandler(StatementHandler):
         first = lines[start_index].rstrip('\n')
         base_indent = get_indent(first)
         stripped = strip_comments(first).strip()
-        m = re.match(r'^while\s+(.+)\s*:\s*$', stripped)
+        m = re.match(r'^while\s+(.+?)\s*:\s*$', stripped)
         if not m:
-            raise SyntaxError("Expected: while condition:")
+            raise SyntaxError("Invalid while loop")
         cond = m.group(1).strip()
-        body, deferred, next_i = parse_block_body(lines, start_index + 1, base_indent)
+        i = start_index + 1
+        body, deferred, next_i = parse_block_body(lines, i, base_indent)
         return ('WHILE', (cond, body, deferred)), next_i
 
     def generate(self, node, indent=''):
         cond, body, deferred = node[1]
-        cond = resolve_dotted_calls(cond)
+        cond = resolve_dotted_call_with_handle(cond)
         lines = [f'{indent}while ({cond}) {{']
         inner = indent + '    '
         for h, n in body:
